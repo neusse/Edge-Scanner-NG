@@ -1,6 +1,6 @@
 # Python 3.11+
 alpaca-py>=0.44.0
-pandas>=2.0.0
+pandas>=3.0.6
 numpy>=1.26
 pyarrow>=14.0.0
 python-dotenv>=1.0.0
