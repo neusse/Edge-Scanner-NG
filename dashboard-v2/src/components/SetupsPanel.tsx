@@ -245,7 +245,7 @@ function TriggerCard({ t, def, onChange, onRemove }: { t: SetupTrigger; def: Tri
 
 function blankSetup(): CustomSetup {
   return { id: '', name: '', color: '#3b82f6', enabled: true, mode: 'or', direction: 'all', sessions: ['rth'], repeat_sec: 0,
-    and_window_min: 5, min_triggers: 2, size_hint: 'half', triggers: [], parameters: [], notes: '', pending_filters: [], source: 'user' }
+    alert_direction: '', and_window_min: 5, min_triggers: 2, size_hint: 'half', triggers: [], parameters: [], notes: '', pending_filters: [], source: 'user' }
 }
 
 // ── panel ────────────────────────────────────────────────────────────────────
@@ -783,10 +783,18 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
                         <span className="row"><input className="input mono" type="number" min={1} max={120} value={current.and_window_min} onChange={e => edit({ and_window_min: Math.max(1, Number(e.target.value) || 1) })} style={{ width: 90 }} /><span className="faint">minutes</span></span>
                       </label>
                     )}
-                    <label className="field"><span>Direction</span>
+                    <label className="field"><span>Signals to detect</span>
                       <select className="input" value={current.direction} onChange={e => edit({ direction: e.target.value as CustomSetup['direction'] })}>
                         <option value="all">Long and short</option><option value="long">Long only</option><option value="short">Short only</option>
                       </select>
+                    </label>
+                    <label className="field"><span>Report alert as</span>
+                      <select className="input" value={current.alert_direction ?? ''}
+                        onChange={e => edit({ alert_direction: e.target.value as CustomSetup['alert_direction'] })}>
+                        <option value="">Detected signal direction</option>
+                        <option value="long">Long</option><option value="short">Short</option><option value="neutral">Neutral</option>
+                      </select>
+                      <span className="faint">For management alerts, a bearish exit can be reported as Long so long-only Scanner windows show it.</span>
                     </label>
                     <label className="field"><span>Calculated during</span>
                       <span className="row" style={{ gap: 10 }}>

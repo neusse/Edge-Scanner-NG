@@ -16,6 +16,7 @@ Definition (JSON):
     "id": "cs_up_volume", "name": "Up Volume", "color": "#4caf50", "enabled": true,
     "mode": "or" | "and",            # any trigger fires / all fire within and_window_min
     "direction": "all" | "long" | "short",
+    "alert_direction": "" | "long" | "short" | "neutral",  # optional display/feed override
     "sessions": ["rth"] | ["pre", "rth"],
     "repeat_sec": 0,                 # do not repeat the same symbol for N seconds
     "and_window_min": 5,
@@ -58,6 +59,7 @@ _SYSTEM_DEFAULT_NAMES = plugins.SYSTEM_DEFAULT_NAMES
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 _MODES = ("or", "and", "atleast")
 _DIRS = ("all", "long", "short")
+_ALERT_DIRS = ("", "long", "short", "neutral")
 _SESSIONS = ("pre", "rth")
 _SIZES = ("full", "three_quarter", "half")
 
@@ -95,6 +97,9 @@ def _normalize_setup(raw: dict, *, existing_id: Optional[str] = None) -> dict:
     direction = str(raw.get("direction") or "all")
     if direction not in _DIRS:
         raise SetupError("direction must be all / long / short")
+    alert_direction = str(raw.get("alert_direction") or "")
+    if alert_direction not in _ALERT_DIRS:
+        raise SetupError("alert_direction must be blank / long / short / neutral")
     sessions = [s for s in (raw.get("sessions") or ["rth"]) if s in _SESSIONS] or ["rth"]
     size_hint = str(raw.get("size_hint") or "half")
     if size_hint not in _SIZES:
@@ -169,6 +174,7 @@ def _normalize_setup(raw: dict, *, existing_id: Optional[str] = None) -> dict:
         "enabled": bool(raw.get("enabled", True)),
         "mode": mode,
         "direction": direction,
+        "alert_direction": alert_direction,
         "sessions": sessions,
         "repeat_sec": max(0, int(float(raw.get("repeat_sec") or 0))),
         "and_window_min": max(1, int(float(raw.get("and_window_min") or 5))),
@@ -221,7 +227,11 @@ def summary_lines(setup: dict) -> dict:
                       f"within {setup.get('and_window_min', 5)} minutes."
                  if setup.get("mode") == "atleast"
                  else f"All alerts below must fire within {setup.get('and_window_min', 5)} minutes."),
-        "direction": {"all": "Long and short alerts.", "long": "Long alerts only.", "short": "Short alerts only."}[setup.get("direction", "all")],
+        "direction": (
+            {"all": "Long and short alerts.", "long": "Long alerts only.", "short": "Short alerts only."}[
+                setup.get("direction", "all")]
+            + (f" Reported as {setup['alert_direction']}." if setup.get("alert_direction") else "")
+        ),
         "sessions": "Premarket and regular session." if "pre" in setup.get("sessions", []) else "Regular session only (09:30-16:00 ET).",
         "repeat": (f"The same symbol does not repeat for {setup['repeat_sec']} seconds." if setup.get("repeat_sec") else
                    "The same symbol + alert does not repeat within the feed's 5-minute cooldown."),
@@ -635,8 +645,9 @@ class CustomEvaluator:
                      all_keys: list[str], sess: str) -> dict:
         from scanner.stops import compute_stop   # local import: keeps module import order simple
         price = float(bar["close"])
-        direction = f.direction if f.direction in ("long", "short") else (
-            "long" if s["direction"] == "long" else "short" if s["direction"] == "short" else "neutral")
+        direction = s.get("alert_direction") or (
+            f.direction if f.direction in ("long", "short") else (
+                "long" if s["direction"] == "long" else "short" if s["direction"] == "short" else "neutral"))
         stop = stop_pct = None
         if sess == "rth" and direction in ("long", "short"):
             try:

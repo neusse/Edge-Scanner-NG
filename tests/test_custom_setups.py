@@ -153,6 +153,25 @@ def test_cross_above_vwap_and_prior_close(tmp_path):
     assert alerts[0]["score"] > 55                # multi-trigger bonus
 
 
+def test_bearish_cross_can_report_a_long_position_exit(tmp_path):
+    """A bearish event may be an exit alert for a long, not a short entry."""
+    ev = _evaluator(tmp_path, _setup(
+        "cs_exit_long",
+        [{"id": "cross_below", "options": ["ema9_5"], "params": {"tf": 1}}],
+        direction="short",
+        alert_direction="long",
+    ))
+    st = _state(symbol="AAA", prior_close=100.0)
+    # Nine completed 5-minute candles warm EMA9. The next two 1-minute closes
+    # move from above that EMA to below it.
+    alerts = _run(ev, st, [100.0] * 50 + [100.5, 99.0])
+
+    assert len(alerts) == 1
+    assert alerts[0]["entry_trigger"] == "cross_below:ema9_5"
+    assert alerts[0]["direction"] == "long"
+    assert "crossed below EMA(9)" in alerts[0]["trigger_note"]
+
+
 def test_new_candle_high_5min_once_per_candle(tmp_path):
     ev = _evaluator(tmp_path, _setup("s1", [{"id": "new_candle_high", "options": ["5"], "params": {"since": 1}}]))
     st = _state()
