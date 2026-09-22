@@ -74,6 +74,18 @@ def test_the_custom_evaluator_shares_the_scanners_rings(tmp_path):
     assert ce.series("AAA") is sc.series("AAA")
 
 
+def test_custom_evaluator_can_stage_on_the_scanners_general_sink(tmp_path):
+    daily = _daily()
+    sc = LiveScanner(["AAA"], None, AlertSink())
+    sc.warmup(daily, {"AAA": daily})
+    ce = CustomEvaluator(CustomSetupStore(tmp_path / "setups"))
+
+    sc.attach_custom(ce)
+
+    assert sc._custom_evaluator is ce
+    assert sc._custom_sink is sc.sink
+
+
 def test_a_standalone_custom_evaluator_still_owns_and_advances_its_own(tmp_path):
     """The check() path and the existing tests construct one unattached."""
     ce = CustomEvaluator(CustomSetupStore(tmp_path / "setups"))
