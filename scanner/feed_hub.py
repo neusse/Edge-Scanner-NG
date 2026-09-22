@@ -226,6 +226,9 @@ class FeedHub:
     def tap(self, sink: AlertSink, source: str) -> AlertSink:
         if source not in SOURCES:
             raise ValueError(f"unknown source {source!r}")
+        sink.restore_cooldowns([
+            alert for alert in self.recent if alert.get("source") == source
+        ])
         return _TapSink(sink, self, source)
 
     def publish(self, alert: dict, source: str) -> dict:

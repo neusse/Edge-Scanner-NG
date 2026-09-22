@@ -69,6 +69,20 @@ def test_tap_publishes_only_accepted_alerts_and_tags_source(tmp_path: Path):
         hub.tap(inner, "bogus")
 
 
+def test_tap_restores_restart_cooldown_from_persisted_archive(tmp_path: Path):
+    store_dir = tmp_path / "all"
+    first_hub = FeedHub(store_dir=store_dir, keep_days=1)
+    first_sink = first_hub.tap(AlertSink(cooldown_minutes=5), "system")
+    assert first_sink.push(_alert(timestamp="2026-09-08T10:30:00-04:00")) is True
+
+    restarted_hub = FeedHub(store_dir=store_dir, keep_days=1, load_persisted=True)
+    restarted_sink = restarted_hub.tap(AlertSink(cooldown_minutes=5), "system")
+
+    assert restarted_sink.push(_alert(timestamp="2026-09-08T10:33:00-04:00")) is False
+    assert restarted_sink.push(_alert(timestamp="2026-09-08T10:36:00-04:00")) is True
+    assert restarted_sink.push(_alert(timestamp="2026-09-09T09:30:00-04:00")) is True
+
+
 # ── API ──────────────────────────────────────────────────────────────────────
 
 @pytest.fixture

@@ -47,7 +47,8 @@ class AlertSink:
         now = pd.Timestamp(alert["timestamp"])
 
         last = self._last_ts.get(key)
-        if last is not None and (now - last) < self._cooldown:
+        elapsed = now - last if last is not None else None
+        if elapsed is not None and pd.Timedelta(0) <= elapsed < self._cooldown:
             log.debug("Sink: cooldown active for %s — skipping", key)
             return False
 
@@ -59,6 +60,24 @@ class AlertSink:
             self._trim()
 
         return True
+
+    def restore_cooldowns(self, alerts: list[dict]) -> None:
+        """Restore accepted-alert timestamps without replaying visible alerts.
+
+        The unified archive contains only alerts that their producer sink
+        accepted.  Rebuilding this small index at startup preserves cooldown
+        behavior across a process restart while leaving the sink's live alert
+        collection empty.
+        """
+        for alert in alerts:
+            try:
+                key = (alert["symbol"], alert["direction"], alert["trigger"])
+                timestamp = pd.Timestamp(alert["timestamp"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            previous = self._last_ts.get(key)
+            if previous is None or timestamp > previous:
+                self._last_ts[key] = timestamp
 
     def top(self, n: int = 10) -> list[dict]:
         """Return the top-n alerts sorted by score descending."""
