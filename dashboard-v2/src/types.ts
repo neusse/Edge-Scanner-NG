@@ -216,6 +216,9 @@ export interface SetupTrigger { id: string; options: string[]; params: Record<st
 export interface CustomSetup {
   id: string; name: string; color: string; enabled: boolean
   mode: 'or' | 'and' | 'atleast'; direction: 'all' | 'long' | 'short'; sessions: string[]
+  /** Optional feed/display direction. Detection still uses `direction`. Useful when
+   *  a bearish cross is an exit warning for a long position. */
+  alert_direction?: '' | 'long' | 'short' | 'neutral'
   /** For mode 'atleast': how many of the selected alerts must fire. */
   min_triggers?: number
   /** Shared, named list of dynamic conditions, ANDed with `parameters`. */
