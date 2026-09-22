@@ -309,6 +309,9 @@ completed candles before it is available; until then the condition fails closed.
 Daily ATR extension measures live price from the prior daily EMA8 in ATR(14) units. Sector relative
 strength compares the stock with its mapped sector ETF over twelve completed 5-minute candles. The
 sector ETFs share the scanner's existing market-data connection; no second stream is opened.
+Daily ATR now uses Wilder's arithmetic mean of the first 5 or 14 true ranges as its seed, then
+Wilder smoothing on each completed daily candle. Values near the start of a short history can change
+from older scanner versions, so recheck ATR-based filters and extension thresholds after upgrading.
 
 Directional high-RVOL ORB setups can use three opening-specific parameters. **Opening 5-min candle
 direction** requires a long breakout to agree with a bullish 09:30-09:35 candle, or a short breakdown

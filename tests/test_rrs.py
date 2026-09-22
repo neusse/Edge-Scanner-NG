@@ -104,6 +104,21 @@ def test_rrs_raw_spy_vs_spy_is_zero():
     np.testing.assert_allclose(non_nan.values, 0.0, atol=1e-10)
 
 
+def test_rrs_uses_canonical_wilder_atr_at_its_first_available_value():
+    idx = pd.date_range("2024-01-01", periods=4, freq="B", tz="UTC")
+    stock = pd.DataFrame({
+        "high": [100.5, 101.0, 102.0, 102.0],
+        "low": [99.5, 99.0, 98.0, 100.0],
+        "close": [100.0, 100.0, 100.0, 101.0],
+    }, index=idx)
+    bench = pd.DataFrame({
+        "high": [101.0] * 4, "low": [99.0] * 4, "close": [100.0] * 4,
+    }, index=idx)
+    # Stock true ranges are 1, 2, 4, 2. ATR(3) seeds at 7/3 and then
+    # becomes 20/9. The stock's three-bar move is +1 and the bench is flat.
+    assert rrs_raw(stock, bench, length=3).iloc[-1] == pytest.approx(9 / 20)
+
+
 def test_rrs_raw_strong_stock_positive():
     """A stock that held flat while the market fell should have positive RRS."""
     # SPY drops steadily; stock stays flat
