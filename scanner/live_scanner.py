@@ -107,11 +107,9 @@ class LiveScanner:
         evaluator.activity = self.activity
 
     def attach_custom(self, evaluator, sink: Optional[AlertSink] = None) -> None:
-        """Attach a CustomEvaluator. Its alerts go to `sink`, or to the system
-        sink when one is attached and no sink is given."""
-        sink = sink if sink is not None else self._system_sink
+        """Attach a CustomEvaluator, preferring an explicit or shared sink."""
         if sink is None:
-            raise RuntimeError("attach_custom() needs a sink (or attach_system() first)")
+            sink = self._system_sink if self._system_sink is not None else self.sink
         self._custom_sink = sink
         self._custom_evaluator = evaluator
         evaluator.activity = self.activity
