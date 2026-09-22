@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  createChart, ColorType, CrosshairMode, LineStyle,
-  type IChartApi, type ISeriesApi, type IPriceLine, type SeriesMarker, type UTCTimestamp,
+  CandlestickSeries, createChart, createSeriesMarkers, ColorType, CrosshairMode,
+  HistogramSeries, LineSeries, LineStyle,
+  type IChartApi, type ISeriesApi, type IPriceLine, type ISeriesMarkersPluginApi,
+  type SeriesMarker, type Time, type UTCTimestamp,
 } from 'lightweight-charts'
 import type { Bar, ChartConfig, ChartOverlays, ChartTimeframe } from '../../types'
 import { api } from '../../lib/api'
@@ -61,6 +63,7 @@ interface Refs {
   chart: IChartApi
   candles: ISeriesApi<'Candlestick'>
   volume: ISeriesApi<'Histogram'>
+  markers: ISeriesMarkersPluginApi<Time>
   lines: Partial<Record<'vwap' | 'ema9' | 'ema21' | 'sma50' | 'sma100' | 'sma200', Line>>
   priceLines: IPriceLine[]
 }
@@ -120,12 +123,13 @@ export function ChartWindow({ win }: { win: ChartConfig }) {
       timeScale: { borderColor: pal.border, timeVisible: true, secondsVisible: false, rightOffset: 3 },
       handleScroll: true, handleScale: true,
     })
-    const candles = chart.addCandlestickSeries({
+    const candles = chart.addSeries(CandlestickSeries, {
       upColor: pal.up, downColor: pal.down, borderUpColor: pal.up, borderDownColor: pal.down, wickUpColor: pal.up, wickDownColor: pal.down,
     })
-    const volume = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false })
+    const volume = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false })
+    const markers = createSeriesMarkers(candles, [])
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } })
-    refs.current = { chart, candles, volume, lines: {}, priceLines: [] }
+    refs.current = { chart, candles, volume, markers, lines: {}, priceLines: [] }
 
     const ro = new ResizeObserver(entries => {
       const r = entries[0]?.contentRect
@@ -166,7 +170,7 @@ export function ChartWindow({ win }: { win: ChartConfig }) {
     const line = (key: keyof Refs['lines'], color: string, width: 1 | 2 = 1, style = LineStyle.Solid, title = ''): Line => {
       let s = r.lines[key]
       if (!s) {
-        s = r.chart.addLineSeries({
+        s = r.chart.addSeries(LineSeries, {
           color, lineWidth: width, lineStyle: style, title,
           lastValueVisible: !!title, priceLineVisible: false, crosshairMarkerVisible: false,
         })
@@ -223,7 +227,7 @@ export function ChartWindow({ win }: { win: ChartConfig }) {
         markers.push({ time: bar as UTCTimestamp, position: long ? 'belowBar' : 'aboveBar', shape: long ? 'arrowUp' : short ? 'arrowDown' : 'circle', color: pal.accent, text: name })
       }
     }
-    r.candles.setMarkers(markers)
+    r.markers.setMarkers(markers)
 
     // Fit only when a fresh data set arrives (new symbol/timeframe, or the first
     // bars after an empty state). Refreshes and overlay toggles must keep the
