@@ -1,8 +1,13 @@
 import type { Bar } from '../types'
-import { isPremarket } from './time'
+import { isPremarket } from './time.ts'
 
 export interface Pt { time: number; value: number }
 type TS = (t: string) => number
+
+/** Bar timestamps mark the opening; overlays only consume closed candles. */
+export function completedIntradayBars<T extends { t: string }>(bars: T[], minutes: number, now = Date.now()): T[] {
+  return bars.filter(b => Date.parse(b.t) + minutes * 60_000 <= now)
+}
 
 /** Cumulative session VWAP over (h+l+c)/3 * v. Correct only for single-day bar sets. */
 export function calcVWAP(bars: Bar[], ts: TS): Pt[] {
@@ -26,12 +31,26 @@ export function calcSMA(bars: Bar[], period: number, ts: TS): Pt[] {
 }
 
 export function calcEMA(bars: Bar[], period: number, ts: TS): Pt[] {
+  if (period < 1) return []
   const k = 2 / (period + 1)
   let prev: number | null = null
-  return bars.map(b => {
-    prev = prev === null ? b.c : b.c * k + prev * (1 - k)
-    return { time: ts(b.t), value: prev }
-  })
+  let seed = 0
+  let seedCount = 0
+  const out: Pt[] = []
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i]
+    if (!Number.isFinite(b.c)) { prev = null; seed = 0; seedCount = 0; continue }
+    if (prev === null) {
+      seed += b.c
+      seedCount++
+      if (seedCount < period) continue
+      prev = seed / period
+    } else {
+      prev += k * (b.c - prev)
+    }
+    out.push({ time: ts(b.t), value: prev })
+  }
+  return out
 }
 
 /** Latest SMA value over the last `period` closes, or null. */

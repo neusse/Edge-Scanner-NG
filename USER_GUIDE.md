@@ -313,6 +313,17 @@ Daily ATR now uses Wilder's arithmetic mean of the first 5 or 14 true ranges as 
 Wilder smoothing on each completed daily candle. Values near the start of a short history can change
 from older scanner versions, so recheck ATR-based filters and extension thresholds after upgrading.
 
+**EMA values.** Alert triggers, alert context, and Stock Info use the same 5-minute EMA tracker.
+It starts with the arithmetic mean of the first *N* completed regular-session candles, then applies
+`2 / (N + 1)` smoothing. The tracker carries across trading days, ignores extended-hours and
+developing candles, and is seeded from prior sessions at startup. Today's cached candles are
+replayed once before live scanning, so a restart does not double-count them. A value is unavailable
+until *N* eligible candles have completed. The chart uses the same seed and completed/RTH rule for
+intraday EMA overlays, but its separate, shorter fetched history and cache can make its latest
+display differ slightly from the scanner's live value. On 1- and 2-minute trigger timeframes there
+is no historical warm-up: those EMA trackers start with the current session. Daily EMA trackers use
+completed daily closes and the same SMA seed.
+
 Directional high-RVOL ORB setups can use three opening-specific parameters. **Opening 5-min candle
 direction** requires a long breakout to agree with a bullish 09:30-09:35 candle, or a short breakdown
 to agree with a bearish one; a doji blocks both. **Opening 5-min relative volume** compares that

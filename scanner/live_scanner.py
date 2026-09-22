@@ -14,6 +14,7 @@ Bar routing inside _on_bar():
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Optional
 
 import pandas as pd
@@ -139,6 +140,7 @@ class LiveScanner:
         symbol_daily: dict[str, pd.DataFrame],
         sector_daily: Optional[dict[str, pd.DataFrame]] = None,
         bars_5m: Optional[dict[str, pd.DataFrame]] = None,
+        session_date: date | str | None = None,
     ) -> None:
         """Build SymbolStates from pre-fetched history DataFrames.
 
@@ -150,6 +152,8 @@ class LiveScanner:
             symbol_daily:   {symbol: daily_df} for every symbol in self.symbols
             sector_daily:   {etf_symbol: daily_df} for sector ETFs (optional)
             bars_5m:        {symbol: 5m_df} for RVOL profile (optional)
+            session_date:   Exclude this date and later from cached warmup;
+                            today's bars are replayed through seed_session_bar.
         """
         self._spy_daily_history = spy_daily.copy()
         self._symbol_daily_history = {
@@ -158,9 +162,16 @@ class LiveScanner:
         self._sector_daily_history = {
             symbol: frame.copy() for symbol, frame in (sector_daily or {}).items()
         }
-        self._bars_5m_history = {
-            symbol: frame.copy() for symbol, frame in (bars_5m or {}).items()
-        }
+        cutoff = pd.Timestamp(session_date).date() if session_date is not None else None
+        self._bars_5m_history = {}
+        for symbol, frame in (bars_5m or {}).items():
+            history = frame.copy()
+            if cutoff is not None and not history.empty:
+                index = pd.DatetimeIndex(history.index)
+                if index.tz is None:
+                    index = index.tz_localize("UTC")
+                history = history.loc[index.tz_convert("America/New_York").date < cutoff]
+            self._bars_5m_history[symbol] = history
         self._bars_5m_session_limits = {}
         for symbol, frame in self._bars_5m_history.items():
             if frame.empty:
@@ -184,7 +195,7 @@ class LiveScanner:
 
             sector_sym = self._sector_map.get(sym)
             sec_df = (sector_daily or {}).get(sector_sym) if sector_sym else None
-            bars5m = (bars_5m or {}).get(sym)
+            bars5m = self._bars_5m_history.get(sym)
 
             self._states[sym] = SymbolState.from_history(
                 sym,
@@ -200,6 +211,7 @@ class LiveScanner:
             series = self._series.setdefault(sym, SymbolSeries(sym))
             series.seed_daily(daily)
             series.seed_intraday(bars5m)
+            self._sync_ema_state(self._states[sym])
             built += 1
 
         log.info("Warmup complete: %d / %d symbols loaded", built, len(self.symbols))
@@ -356,10 +368,24 @@ class LiveScanner:
             ts = ts.tz_localize("UTC")
         et = ts.tz_convert("America/New_York")
         vwap = state.vwap
-        return self.series(state.symbol).on_bar(
+        session = self.series(state.symbol).on_bar(
             bar, et.hour * 60 + et.minute, et.strftime("%Y-%m-%d"),
             float(vwap) if vwap is not None else None,
         )
+        self._sync_ema_state(state)
+        return session
+
+    def _sync_ema_state(self, state: SymbolState) -> None:
+        """Expose the alert series' completed five-minute EMA in Stock Info."""
+        series = self.series(state.symbol)
+        for period, name in ((3, "3"), (8, "8"), (9, "9"), (21, "21")):
+            tracker = series.ema(5, period)
+            setattr(state, f"_prev_ema_{name}", tracker.prev)
+            setattr(state, f"_ema_{name}", tracker.value)
+        if series.completed[5] and state._stock_5m:
+            completed = state._stock_5m[-1]
+            completed["ema9_snap"] = state.ema_9
+            completed["ema21_snap"] = state.ema_21
 
     def seed_session_bar(self, bar: dict, spy_bar: Optional[dict] = None,
                          sector_bar: Optional[dict] = None) -> bool:
@@ -580,6 +606,7 @@ class LiveScanner:
 
             series = self.series(symbol)
             series.seed_daily(history)
+            self._sync_ema_state(state)
             # The refreshed daily frame already contains `day`; prevent the
             # first new-session bar from appending the same extremes again.
             series.session_date = None

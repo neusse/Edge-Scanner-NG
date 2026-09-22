@@ -119,6 +119,57 @@ def test_warmup_prior_close_is_last_bar():
     assert scanner._states["AAPL"].prior_close == pytest.approx(expected_close)
 
 
+def test_stock_info_ema_matches_alert_ema_from_completed_prior_candles():
+    scanner, _, _ = _make_scanner()
+    closes = [100.0 + i * 0.4 for i in range(30)]
+    idx = pd.date_range("2024-01-02 09:30", periods=30, freq="5min",
+                        tz="America/New_York").tz_convert("UTC")
+    bars = pd.DataFrame({"open": closes, "high": closes, "low": closes,
+                         "close": closes, "volume": 1_000.0}, index=idx)
+    scanner.warmup(_daily_bars(60, 450), {"AAPL": _daily_bars()}, bars_5m={"AAPL": bars})
+
+    alert_ema = scanner.series("AAPL").ema(5, 9).value
+    assert alert_ema is not None
+    assert scanner._states["AAPL"].ema_9 == pytest.approx(alert_ema)
+
+    for minute in range(30, 36):
+        scanner.seed_session_bar(_bar("AAPL", 114.0, f"2024-01-03 09:{minute:02d}"))
+    assert scanner._states["AAPL"].ema_9 == pytest.approx(scanner.series("AAPL").ema(5, 9).value)
+
+
+def test_warmup_does_not_seed_todays_cached_candle_before_session_replay():
+    scanner, _, _ = _make_scanner()
+    prior = pd.date_range("2024-01-02 09:30", periods=9, freq="5min",
+                          tz="America/New_York").tz_convert("UTC")
+    today = pd.DatetimeIndex([pd.Timestamp("2024-01-03 09:30", tz="America/New_York")]).tz_convert("UTC")
+    idx = prior.append(today)
+    closes = [100.0] * 9 + [1000.0]
+    bars = pd.DataFrame({"open": closes, "high": closes, "low": closes,
+                         "close": closes, "volume": 1_000.0}, index=idx)
+    scanner.warmup(_daily_bars(60, 450), {"AAPL": _daily_bars()},
+                   bars_5m={"AAPL": bars}, session_date="2024-01-03")
+    assert scanner.series("AAPL").ema(5, 9).value == pytest.approx(100.0)
+    assert scanner._states["AAPL"].ema_9 == pytest.approx(100.0)
+
+    # Date rollover and a mid-session restart must agree with the same
+    # completed-candle history; a developing five-minute bar cannot move EMA.
+    for minute in range(30, 35):
+        scanner.seed_session_bar(_bar("AAPL", 110.0, f"2024-01-03 09:{minute:02d}"))
+    assert scanner._states["AAPL"].ema_9 == pytest.approx(100.0)
+    scanner.seed_session_bar(_bar("AAPL", 110.0, "2024-01-03 09:35"))
+    expected = scanner.series("AAPL").ema(5, 9).value
+    assert expected == pytest.approx(102.0)
+
+    restart, _, _ = _make_scanner()
+    replay = bars.iloc[:-1].copy()
+    replay.loc[pd.Timestamp("2024-01-03 09:30", tz="America/New_York").tz_convert("UTC")] = [110.0, 110.0, 110.0, 110.0, 6_000.0]
+    restart.warmup(_daily_bars(60, 450), {"AAPL": _daily_bars()},
+                   bars_5m={"AAPL": replay}, session_date="2024-01-03")
+    for minute in range(30, 36):
+        restart.seed_session_bar(_bar("AAPL", 110.0, f"2024-01-03 09:{minute:02d}"))
+    assert restart._states["AAPL"].ema_9 == pytest.approx(expected)
+
+
 def test_opening_rvol_rank_is_cross_sectional_and_tracks_coverage():
     scanner, _, _ = _make_scanner(symbols=["AAA", "BBB"])
     _warmup(scanner, symbols=["AAA", "BBB"])
@@ -259,7 +310,7 @@ def test_symbol_bar_updates_cumulative_volume():
     assert state._cum_vol == pytest.approx(200_000.0)
 
 
-def test_symbol_bar_seeds_ema_on_first_completed_5m_bar():
+def test_symbol_bar_waits_for_a_full_ema_seed_window():
     scanner, _, _ = _make_scanner()
     _warmup(scanner)
     state = scanner._states["AAPL"]
@@ -267,9 +318,14 @@ def test_symbol_bar_seeds_ema_on_first_completed_5m_bar():
     for minute in ["10:00", "10:01", "10:02", "10:03", "10:04"]:
         scanner._on_bar(_bar("AAPL", price=100.0, et_str=f"2024-01-02 {minute}"))
     assert state.ema_3 is None
-    # 10:05 starts a new slot → completes the 10:00 bar (close=100.0)
-    scanner._on_bar(_bar("AAPL", price=101.0, et_str="2024-01-02 10:05"))
-    assert state.ema_3 == pytest.approx(100.0)
+    # 10:05 completes one candle; neither EMA has enough completed candles.
+    scanner._on_bar(_bar("AAPL", price=100.0, et_str="2024-01-02 10:05"))
+    assert state.ema_3 is None and state.ema_9 is None
+    for minute in range(6, 46):
+        scanner._on_bar(_bar("AAPL", price=100.0, et_str=f"2024-01-02 10:{minute:02d}"))
+        if minute == 15:
+            assert state.ema_3 == pytest.approx(100.0)
+            assert state.ema_9 is None
     assert state.ema_9 == pytest.approx(100.0)
 
 

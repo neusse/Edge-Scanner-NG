@@ -55,6 +55,10 @@ jobs:
         working-directory: dashboard-v2
         run: npm run lint
 
+      - name: Test chart calculations
+        working-directory: dashboard-v2
+        run: npm test
+
       - name: Build
         working-directory: dashboard-v2
         run: npm run build

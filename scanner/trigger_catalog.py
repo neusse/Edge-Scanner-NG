@@ -28,6 +28,8 @@ from typing import Any, Callable, Optional
 
 import pandas as pd
 
+from scanner.indicators.ema_sma import SeededEMA
+
 # 3 exists for the candle-size choice on Crossing above / below. It is session-only
 # like 1 and 2, and deliberately NOT in _ALL_TF, so the triggers that offer every
 # timeframe as an option did not all grow a "3 Min" box nobody asked for.
@@ -434,32 +436,8 @@ def et_minutes(ts) -> int:
     return t.hour * 60 + t.minute
 
 
-def _ema_next(prev: Optional[float], value: float, period: int) -> float:
-    if prev is None:
-        return value
-    k = 2.0 / (period + 1)
-    return prev + k * (value - prev)
-
-
-class _Ema:
-    """Incremental EMA seeded with an SMA of the first `period` values."""
-    __slots__ = ("period", "value", "prev", "_seed")
-
-    def __init__(self, period: int) -> None:
-        self.period = period
-        self.value: Optional[float] = None
-        self.prev: Optional[float] = None
-        self._seed: list[float] = []
-
-    def push(self, close: float) -> None:
-        self.prev = self.value
-        if self.value is None:
-            self._seed.append(close)
-            if len(self._seed) >= self.period:
-                self.value = sum(self._seed) / len(self._seed)
-                self._seed = []
-        else:
-            self.value = _ema_next(self.value, close, self.period)
+class _Ema(SeededEMA):
+    """Compatibility name for the shared completed-candle EMA implementation."""
 
 
 class SymbolSeries:
@@ -496,7 +474,8 @@ class SymbolSeries:
             e = self.emas[(tf, period)] = _Ema(period)
             # seed from candles already known for that timeframe
             for c in self.candles[tf]:
-                e.push(c["close"])
+                if c.get("session", "rth") == "rth":
+                    e.push(c["close"])
         return e
 
     def want_ema(self, tf: int, period: int) -> None:
@@ -561,7 +540,8 @@ class SymbolSeries:
         for (tf, period), e in list(self.emas.items()):
             self.emas[(tf, period)] = _Ema(period)
             for c in self.candles[tf]:
-                self.emas[(tf, period)].push(c["close"])
+                if c.get("session", "rth") == "rth":
+                    self.emas[(tf, period)].push(c["close"])
 
     # ── live ──
     def on_bar(self, bar: dict, et_min: int, day: str, vwap: Optional[float]) -> str:
@@ -608,7 +588,7 @@ class SymbolSeries:
                     self.candles[tf].append(p)
                     self.completed[tf] = True
                     for (etf, period), e in self.emas.items():
-                        if etf == tf:
+                        if etf == tf and p["session"] == "rth":
                             e.push(p["close"])
                 self.partial[tf] = {"key": key, "open": o, "high": h, "low": l, "close": c, "volume": v,
                                     "vwap": vwap, "et_min": et_min, "session": sess}
