@@ -1,7 +1,6 @@
 # Edge Scanner
 
-[![CI](https://github.com/simonro/edge-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/simonro/edge-scanner/actions/workflows/ci.yml)
-[![Latest release](https://img.shields.io/github/v/release/simonro/edge-scanner)](https://github.com/simonro/edge-scanner/releases/latest)
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A real-time intraday stock scanner for US equities that runs on your own machine. It streams
@@ -20,17 +19,11 @@ instead of someone else's alert list.
   WebSocket feed other programs can subscribe to.
 - **Free and MIT licensed.** No paid tier.
 
-**[Quick start](#quick-start)** · **[Watch the walkthrough](https://youtu.be/fGerDFkKGUI)** · **[User guide](USER_GUIDE.md)** · **[Releases](https://github.com/simonro/edge-scanner/releases)** · **[Privacy](#privacy-and-your-data)**
-
 **What this is not:** not financial advice, not a signal service, and not a broker. It never places
 an order. The sample setups are starting points, not a strategy. The screenshots below come from a
 replayed past session, so the alerts are synthetic in the sense that they were produced by a replay:
 they are not anyone's real account, positions or orders.
 
-[![Watch: I build my own stock scanner setups, free and open source](docs/video-thumbnail.jpg)](https://youtu.be/fGerDFkKGUI)
-
-**[I build my own stock scanner setups, free and open source](https://youtu.be/fGerDFkKGUI)**: why I
-stopped paying for a scanner, how the setups are built, and the app running on a live session.
 
 ## Privacy and your data
 
@@ -215,7 +208,7 @@ the setup, the tests a change needs, and how to add a trigger, a condition or a 
 Please report security problems privately, as described in [SECURITY.md](SECURITY.md), not in a
 public issue.
 
-## Who made this
+## Who made this / Not me,  this guy made it.  This is my Fork.  
 
 A day trader who wanted scans that match how he actually trades, and a dashboard that fits one
 ultrawide monitor. Built by describing the problems to Claude Code.
