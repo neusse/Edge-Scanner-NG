@@ -296,6 +296,13 @@ crosses retain their recross behavior and setup cooldown.
 within one ATR on the inside of the stored level, and the **bar's high or low** must not have
 crossed it. An exact touch is allowed. A wick-through, rejection, close-through, or gap-through
 is not a near-level event; use a breakout or rejection trigger for those behaviors.
+VWAP support/resistance "touch" uses a **two-sided price band** around VWAP. The configured
+tolerance is either a percentage of VWAP price or a percentage of daily ATR, converted to dollars.
+The completed candle's low (support) or high (resistance) must lie between VWAP minus and plus
+that tolerance, inclusive; the prior candle and current close must remain on the appropriate side,
+and the touch candle must close green for support or red for resistance. A shallow penetration is a
+touch. A deep cross, reclaim, or gap-through is not; use the cross/through or rejection triggers
+for those events. The scanner does not call a deep excursion a VWAP support/resistance hold.
 
 ### Custom setups
 

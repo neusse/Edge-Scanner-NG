@@ -339,12 +339,12 @@ def _build_catalog() -> list[TriggerDef]:
                    "both", _ABOVE_BELOW, "Side", params=(ParamDef("mult", "Candle size", 3.0, 1, 10, 0.5, "x avg range"),),
                    sessions=("rth",), default_options=("above",)))
     add(TriggerDef("vwap_support", "VWAP support hold", "Crosses & levels",
-                   "A candle dips to VWAP (its low comes within the touch tolerance) and the alert fires "
+                   "A candle dips into a bounded VWAP touch band (VWAP plus/minus tolerance, including shallow penetration) and the alert fires "
                    "when that candle CLOSES green above VWAP, with the candle before it also above VWAP.",
                    "long", _tf_options(1, 3, 5, 15), params=_VWAP_TOUCH,
                    sessions=("rth",), default_options=("3",)))
     add(TriggerDef("vwap_resistance", "VWAP resistance hold", "Crosses & levels",
-                   "A candle rallies to VWAP (its high comes within the touch tolerance) and the alert fires "
+                   "A candle rallies into a bounded VWAP touch band (VWAP plus/minus tolerance, including shallow penetration) and the alert fires "
                    "when that candle CLOSES red below VWAP, with the candle before it also below VWAP.",
                    "short", _tf_options(1, 3, 5, 15), params=_VWAP_TOUCH,
                    sessions=("rth",), default_options=("3",)))
@@ -1432,10 +1432,10 @@ def _vwap_sr(c: EvalCtx, tf: int, tol_pct: float, support: bool, atr_unit: bool 
     else:
         tol = v * tol_pct / 100.0
     if support:
-        if a["close"] > va and b["low"] <= v + tol and b["close"] > v and b["close"] > b["open"]:
+        if a["close"] > va and v - tol <= b["low"] <= v + tol and b["close"] > v and b["close"] > b["open"]:
             return Fire("long", v, f"{TF_LABEL[tf]} bounce off VWAP {v:.2f}")
     else:
-        if a["close"] < va and b["high"] >= v - tol and b["close"] < v and b["close"] < b["open"]:
+        if a["close"] < va and v - tol <= b["high"] <= v + tol and b["close"] < v and b["close"] < b["open"]:
             return Fire("short", v, f"{TF_LABEL[tf]} rejection at VWAP {v:.2f}")
     return None
 

@@ -1201,7 +1201,7 @@ def test_near_level_requires_the_entire_bar_to_stay_inside(trigger, side):
 
 # ── VWAP support / resistance: candle size and touch tolerance unit ─────────
 
-def _vs_hits(minutes, tf, tol, unit, atr=2.0, vwap=100.0):
+def _vs_hits(minutes, tf, tol, unit, atr=2.0, vwap=100.0, trigger="vwap_support"):
     """minutes = (open, high, low, close) per 1-min bar at a flat VWAP."""
     from types import SimpleNamespace
     from scanner.trigger_catalog import EvalCtx, _IMPL
@@ -1212,7 +1212,7 @@ def _vs_hits(minutes, tf, tol, unit, atr=2.0, vwap=100.0):
         s.on_bar(bar, 600 + i, "2026-09-15", vwap)
         ctx = EvalCtx(state=SimpleNamespace(symbol="X", atr_d1=atr), series=s, bar=bar,
                       et_min=600 + i, session="rth", external=set())
-        if _IMPL["vwap_support"](ctx, str(tf), {"tol_pct": tol, "tol_unit": unit}) is not None:
+        if _IMPL[trigger](ctx, str(tf), {"tol_pct": tol, "tol_unit": unit}) is not None:
             hits.append(i)
     return hits
 
@@ -1236,6 +1236,21 @@ def test_vwap_touch_in_atr_scales_with_the_stock():
 def test_vwap_touch_in_percent_of_price_still_works():
     assert _vs_hits(_ABOVE + _DIP + _NEXT, 3, 0.05, 0) == [6]    # 0.05% of $100 = $0.05
     assert _vs_hits(_ABOVE + _DIP + _NEXT, 3, 0.02, 0) == []
+
+
+@pytest.mark.parametrize("trigger,prior,candidate,expected", [
+    ("vwap_support", (100.4, 100.5, 100.3, 100.4), (100.2, 100.4, 100.11, 100.3), []),
+    ("vwap_support", (100.4, 100.5, 100.3, 100.4), (100.2, 100.4, 100.00, 100.3), [2]),
+    ("vwap_support", (100.4, 100.5, 100.3, 100.4), (100.2, 100.4, 99.95, 100.3), [2]),
+    ("vwap_support", (100.4, 100.5, 100.3, 100.4), (100.2, 100.4, 99.50, 100.3), []),
+    ("vwap_resistance", (99.6, 99.7, 99.5, 99.6), (99.8, 99.89, 99.6, 99.7), []),
+    ("vwap_resistance", (99.6, 99.7, 99.5, 99.6), (99.8, 100.00, 99.6, 99.7), [2]),
+    ("vwap_resistance", (99.6, 99.7, 99.5, 99.6), (99.8, 100.05, 99.6, 99.7), [2]),
+    ("vwap_resistance", (99.6, 99.7, 99.5, 99.6), (99.8, 100.50, 99.6, 99.7), []),
+])
+def test_vwap_touch_band_is_bounded_on_both_sides(trigger, prior, candidate, expected):
+    # A completed one-minute candle is evaluated when the next one starts.
+    assert _vs_hits([prior, candidate, candidate], 1, 0.1, 0, trigger=trigger) == expected
 
 
 def test_new_vwap_alerts_default_to_3_min_and_atr():
