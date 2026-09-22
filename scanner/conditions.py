@@ -399,7 +399,11 @@ def _resolve_streak(c: ConditionCtx, opt: str, p: dict) -> Optional[float]:
     """
     if c.series is None:
         return None
-    n = consec_streak(c.series, int(opt.split(":")[-1]) if ":" in opt else int(p.get("tf", 2)))
+    n = consec_streak(
+        c.series,
+        int(opt.split(":")[-1]) if ":" in opt else int(p.get("tf", 2)),
+        c.session,
+    )
     if n is None:
         return None
     which = opt.split(":")[0] if ":" in opt else opt

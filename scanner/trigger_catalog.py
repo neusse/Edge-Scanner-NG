@@ -708,7 +708,8 @@ def rolling_rel_volume(series: "SymbolSeries", tf: int, lookback: int,
     return current / avg
 
 
-def consec_streak(series: "SymbolSeries", tf: int) -> Optional[int]:
+def consec_streak(series: "SymbolSeries", tf: int,
+                  session: Optional[str] = None) -> Optional[int]:
     """Signed run length over COMPLETED tf-candles.
 
     +N for N consecutive closes above their open, -N for N consecutive below,
@@ -717,6 +718,11 @@ def consec_streak(series: "SymbolSeries", tf: int) -> Optional[int]:
     if tf not in TIMEFRAMES:
         return None
     cs = list(series.candles[tf])
+    if session is not None:
+        cs = [
+            candle for candle in cs
+            if candle["key"][0] == series.session_date and candle["key"][1] == session
+        ]
     if not cs:
         return None
     last = cs[-1]
@@ -1126,10 +1132,18 @@ def _t_orb_dn(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
 
 # ── candles ──
 
+def _session_completed(c: EvalCtx, tf: int, n: Optional[int] = None) -> list[dict]:
+    candles = [
+        candle for candle in c.series.candles[tf]
+        if candle["key"][0] == c.series.session_date and candle["key"][1] == c.session
+    ]
+    return candles[-n:] if n is not None else candles
+
+
 def _completed_pair(c: EvalCtx, tf: int) -> Optional[tuple[dict, dict]]:
     if not c.series.completed[tf]:
         return None
-    cs = c.series.last_completed(tf, 2)
+    cs = _session_completed(c, tf, 2)
     if len(cs) < 2:
         return None
     return cs[-2], cs[-1]
@@ -1302,7 +1316,7 @@ def _t_consec(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     green = opt == "green"
     # Signed streak, shared with conditions: +N green, -N red. `ok` is exactly
     # the old all()-over-the-last-`need`-candles test.
-    streak = consec_streak(c.series, tf) or 0
+    streak = consec_streak(c.series, tf, c.session) or 0
     ok = (streak >= need) if green else (streak <= -need)
     # fire once when the streak reaches `need` (the candle before the run must break it, or unknown)
     if ok and c.edge(f"consec:{opt}:{tf}", ok):
@@ -1384,7 +1398,7 @@ def _t_through(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     up = opt == "above"
     if not _cross(c.prev_close, c.close, v, up):
         return None
-    m1 = list(c.series.m1)
+    m1 = [bar for bar in c.series.m1 if bar["session"] == c.session]
     if len(m1) < 11:
         return None
     avg = sum(b["high"] - b["low"] for b in m1[-11:-1]) / 10
@@ -1537,7 +1551,7 @@ def range_width_limit(c: "EvalCtx", cs: list[dict], tf: int, n: int, unit: int,
         atr = _f(getattr(c.state, "atr_d1", None))
         return width * atr if atr and atr > 0 else None
     if unit == 2:
-        allc = list(c.series.candles[tf])
+        allc = _session_completed(c, tf)
         base = allc[-(n + _RANGE_BASELINE_CANDLES):-n] if len(allc) > n else []
         if len(base) < _RANGE_BASELINE_CANDLES // 2:
             return None
@@ -1549,7 +1563,7 @@ def range_width_limit(c: "EvalCtx", cs: list[dict], tf: int, n: int, unit: int,
 @_impl("range_break")
 def _t_range_break(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     n, tf = int(p["bars"]), int(p["tf"])
-    cs = c.series.last_completed(tf, n)
+    cs = _session_completed(c, tf, n)
     if len(cs) < n:
         return None
     # Note the early returns below leave the latch untouched on purpose: a bar
