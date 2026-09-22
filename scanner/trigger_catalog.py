@@ -20,6 +20,7 @@ Nothing here touches the existing evaluators, gates or setups.
 """
 from __future__ import annotations
 
+import json
 import math
 from collections import deque
 from dataclasses import dataclass, field
@@ -790,6 +791,7 @@ class EvalCtx:
     external: set[str]             # "setup:<code>"
     spy_mom_15m: Optional[float] = None
     resolved_levels: dict = field(default_factory=dict)
+    memory_scope: str = ""
 
     @property
     def close(self) -> float:
@@ -811,6 +813,7 @@ class EvalCtx:
 
     def once(self, key: str) -> bool:
         """True the first time `key` is seen today (per symbol)."""
+        key = f"{self.memory_scope}|{key}" if self.memory_scope else key
         if self.series.mem.get(key):
             return False
         self.series.mem[key] = True
@@ -818,6 +821,7 @@ class EvalCtx:
 
     def edge(self, key: str, cond: bool) -> bool:
         """True when `cond` turns True (was False or unknown before)."""
+        key = f"{self.memory_scope}|{key}" if self.memory_scope else key
         was = self.series.mem.get(key, False)
         self.series.mem[key] = cond
         return cond and not was
@@ -1732,7 +1736,12 @@ def evaluate(tid: str, ctx: EvalCtx, opt: str, params: dict) -> Optional[Fire]:
         return None
     p = {q.key: q.default for q in t.params}
     p.update({k: v for k, v in (params or {}).items() if k in p})
-    return fn(ctx, opt, p)
+    previous_scope = ctx.memory_scope
+    ctx.memory_scope = json.dumps([tid, opt, p], sort_keys=True, separators=(",", ":"))
+    try:
+        return fn(ctx, opt, p)
+    finally:
+        ctx.memory_scope = previous_scope
 
 
 def trigger_key(tid: str, opt: str) -> str:
