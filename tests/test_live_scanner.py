@@ -10,6 +10,8 @@ from scanner.custom_setups import CustomEvaluator, CustomSetupStore
 from scanner.data.interface import DataFeed, Timeframe
 from scanner.live_scanner import LiveScanner
 from scanner.market import MarketRegime
+from scanner.state import SymbolState
+from scanner.trigger_catalog import SymbolSeries
 
 
 # ── Fake feed for testing (non-blocking) ─────────────────────────────────────
@@ -314,6 +316,114 @@ def test_reset_session_clears_sink():
     assert len(sink) == 1
     scanner.reset_session()
     assert len(sink) == 0
+
+
+def test_overnight_rollover_matches_a_clean_daily_restart():
+    scanner, _, _ = _make_scanner()
+    spy_daily = _daily_bars(220, base=450.0, step=0.1)
+    stock_daily = _daily_bars(220, base=100.0, step=0.05)
+    scanner.warmup(spy_daily, {"AAPL": stock_daily})
+
+    scanner._on_bar(_spy_bar(500.0, "2024-01-02 09:30"))
+    scanner._on_bar(_bar("AAPL", 110.0, "2024-01-02 09:30") | {"volume": 100_000.0})
+    scanner._on_bar(_spy_bar(502.0, "2024-01-02 15:59"))
+    scanner._on_bar(_bar("AAPL", 112.0, "2024-01-02 15:59") | {"volume": 300_000.0})
+
+    day = pd.Timestamp("2024-01-02", tz="UTC")
+    stock_completed = pd.DataFrame({
+        "open": [110.0], "high": [112.05], "low": [109.95],
+        "close": [112.0], "volume": [400_000.0],
+    }, index=pd.DatetimeIndex([day]))
+    spy_completed = pd.DataFrame({
+        "open": [500.0], "high": [502.05], "low": [499.95],
+        "close": [502.0], "volume": [200_000.0],
+    }, index=pd.DatetimeIndex([day]))
+    expected_stock_daily = pd.concat([stock_daily, stock_completed]).tail(len(stock_daily))
+    expected_spy_daily = pd.concat([spy_daily, spy_completed]).tail(len(spy_daily))
+    expected = SymbolState.from_history("AAPL", expected_stock_daily, expected_spy_daily)
+    expected_series = SymbolSeries("AAPL")
+    expected_series.seed_daily(expected_stock_daily)
+
+    scanner._on_bar(_spy_bar(503.0, "2024-01-03 04:00"))
+    actual = scanner._states["AAPL"]
+
+    for field in (
+        "prior_open", "prior_high", "prior_low", "prior_close", "adv20",
+        "atr_d1", "atr_14_d1", "rrs_d1", "sma_50", "sma_100", "sma_200",
+        "ema_8_d1", "chart_quality",
+    ):
+        assert getattr(actual, field) == pytest.approx(getattr(expected, field))
+    assert scanner.series("AAPL").daily == expected_series.daily
+
+
+def test_overnight_rollover_adds_completed_session_to_rvol_profile():
+    scanner, _, _ = _make_scanner()
+    spy_daily = _daily_bars(60, base=450.0, step=0.1)
+    stock_daily = _daily_bars(60, base=100.0, step=0.05)
+    days = pd.date_range("2023-12-01", periods=20, freq="B")
+    index = pd.DatetimeIndex([
+        pd.Timestamp(f"{day.date()} 09:30", tz="America/New_York").tz_convert("UTC")
+        for day in days
+    ])
+    bars_5m = pd.DataFrame({
+        "open": 100.0, "high": 100.1, "low": 99.9, "close": 100.0,
+        "volume": 500.0,
+    }, index=index)
+    scanner.warmup(spy_daily, {"AAPL": stock_daily}, bars_5m={"AAPL": bars_5m})
+
+    scanner._on_bar(_spy_bar(500.0, "2024-01-02 09:30"))
+    for minute in range(30, 36):
+        scanner._on_bar(
+            _bar("AAPL", 110.0, f"2024-01-02 09:{minute:02d}") | {"volume": 200.0}
+        )
+    scanner._on_bar(_spy_bar(501.0, "2024-01-03 04:00"))
+
+    assert scanner._states["AAPL"].volume_profile.loc[0] == pytest.approx(
+        (19 * 500.0 + 1_000.0) / 20
+    )
+
+
+def test_overnight_rollover_refreshes_daily_sector_relative_strength():
+    feed = _FakeFeed()
+    scanner = LiveScanner(["AAPL"], feed, AlertSink(), sector_map={"AAPL": "XLF"})
+    spy_daily = _daily_bars(220, base=450.0, step=0.1)
+    stock_daily = _daily_bars(220, base=100.0, step=0.05)
+    sector_daily = _daily_bars(220, base=40.0, step=0.03)
+    scanner.warmup(
+        spy_daily,
+        {"AAPL": stock_daily},
+        sector_daily={"XLF": sector_daily},
+    )
+
+    scanner._on_bar(_spy_bar(500.0, "2024-01-02 09:30"))
+    scanner._on_bar(_bar("XLF", 50.0, "2024-01-02 09:30") | {"volume": 50_000.0})
+    scanner._on_bar(_bar("AAPL", 110.0, "2024-01-02 09:30") | {"volume": 100_000.0})
+    scanner._on_bar(_spy_bar(502.0, "2024-01-02 15:59"))
+    scanner._on_bar(_bar("XLF", 55.0, "2024-01-02 15:59") | {"volume": 150_000.0})
+    scanner._on_bar(_bar("AAPL", 112.0, "2024-01-02 15:59") | {"volume": 300_000.0})
+
+    day = pd.Timestamp("2024-01-02", tz="UTC")
+    stock_completed = pd.DataFrame({
+        "open": [110.0], "high": [112.05], "low": [109.95],
+        "close": [112.0], "volume": [400_000.0],
+    }, index=pd.DatetimeIndex([day]))
+    spy_completed = pd.DataFrame({
+        "open": [500.0], "high": [502.05], "low": [499.95],
+        "close": [502.0], "volume": [200_000.0],
+    }, index=pd.DatetimeIndex([day]))
+    sector_completed = pd.DataFrame({
+        "open": [50.0], "high": [55.05], "low": [49.95],
+        "close": [55.0], "volume": [200_000.0],
+    }, index=pd.DatetimeIndex([day]))
+    expected = SymbolState.from_history(
+        "AAPL",
+        pd.concat([stock_daily, stock_completed]).tail(len(stock_daily)),
+        pd.concat([spy_daily, spy_completed]).tail(len(spy_daily)),
+        sector_daily=pd.concat([sector_daily, sector_completed]).tail(len(sector_daily)),
+    )
+
+    scanner._on_bar(_spy_bar(503.0, "2024-01-03 04:00"))
+    assert scanner._states["AAPL"].rrs_sector_d1 == pytest.approx(expected.rrs_sector_d1)
 
 
 # ── system setups (attach_system) ────────────────────────────────────────────
