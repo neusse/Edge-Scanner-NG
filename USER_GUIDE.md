@@ -285,6 +285,13 @@ suggested stop (the low of the last few 1-minute bars for a long, the high for a
 
 Setups are **edge-triggered**: an alert fires on the bar where the setup first becomes true, not on every
 bar while it stays true, and the same symbol and setup do not repeat within a 5-minute cooldown.
+Milestone triggers use a stricter lifetime than ordinary crosses: N-day and 52-week highs/lows,
+prior-day breaks, and premarket breaks fire on the first **strict intraday high/low breach** of the
+stored level for that symbol and side that trading day. Touching the level is not a breach; a wick
+through it counts even if the bar closes back inside. A restart replay silently restores the latch,
+and later recrosses do not repeat the milestone. Setup Check shows the level, lifetime, and whether
+that side already alerted. A later genuine HOD/LOD remains independent and may still alert. EMA/VWAP
+crosses retain their recross behavior and setup cooldown.
 
 ### Custom setups
 

@@ -86,6 +86,7 @@ class TriggerDef:
     sessions: tuple[str, ...] = ("pre", "rth")
     source: str = "native"               # native | system
     default_options: tuple[str, ...] = ()
+    lifetime: str = "edge_rearm"        # event contract exposed to Setup Check clients
 
     def to_json(self) -> dict:
         return {
@@ -98,6 +99,7 @@ class TriggerDef:
                        for p in self.params],
             "sessions": list(self.sessions), "source": self.source,
             "default_options": list(self.default_options),
+            "lifetime": self.lifetime,
         }
 
 
@@ -188,15 +190,15 @@ def _build_catalog() -> list[TriggerDef]:
                    "does not fire, rather than quietly using a shorter window.", "both", _HL, "Side",
                    params=(ParamDef("days", "Days", 60, 2, 252, 1, "sessions",
                                     "How many completed sessions the high or low is taken over."),),
-                   sessions=("rth",), default_options=("high",)))
+                   sessions=("rth",), default_options=("high",), lifetime="first_breach_per_day"))
     add(TriggerDef("hi_lo_52w", "52-week high/low", "Highs & lows",
-                   "Close crosses the highest high (lowest low) of the daily history loaded at startup (up to 52 weeks).",
-                   "both", _HL, "Side", default_options=("high",)))
+                   "First strict intraday trade beyond the highest high (lowest low) of up to 252 completed daily sessions; once per side per trading day.",
+                   "both", _HL, "Side", sessions=("rth",), default_options=("high",), lifetime="first_breach_per_day"))
     add(TriggerDef("prior_day_break", "Prior day high/low break", "Highs & lows",
-                   "Close crosses yesterday's high (long) or low (short).", "both", _HL, "Side", default_options=("high",)))
+                   "First strict intraday trade beyond yesterday's high (long) or low (short); once per side per trading day.", "both", _HL, "Side", default_options=("high",), lifetime="first_breach_per_day"))
     add(TriggerDef("pm_break", "Premarket high/low break", "Highs & lows",
-                   "Regular-session close crosses the premarket high (long) or low (short).", "both", _HL, "Side",
-                   sessions=("rth",), default_options=("high",)))
+                   "First strict regular-session trade beyond the premarket high (long) or low (short); once per side per trading day.", "both", _HL, "Side",
+                   sessions=("rth",), default_options=("high",), lifetime="first_breach_per_day"))
     add(TriggerDef("new_candle_high", "New candle high", "Highs & lows",
                    "The current candle trades above the high of the previous N candles of the timeframe. Once per candle.",
                    "long", _ALL_TF, params=(ParamDef("since", "Since candles", 1, 1, 20, 1, "candles",
@@ -919,6 +921,30 @@ def n_day_latch_key(days: int, side: str) -> str:
     return f"hi_lo_60d:{int(days)}:{side}:alerted"
 
 
+def milestone_latch_key(trigger_id: str, side: str) -> str:
+    return f"{trigger_id}:{side}:alerted"
+
+
+def _first_milestone_breach(c: EvalCtx, trigger_id: str, side: str,
+                            level: Optional[float], prior_extreme: Optional[float],
+                            note: str) -> Optional[Fire]:
+    if level is None:
+        return None
+    latch = milestone_latch_key(trigger_id, side)
+    if c.series.mem.get(latch):
+        return None
+    high = side == "high"
+    if prior_extreme is not None and (prior_extreme > level if high else prior_extreme < level):
+        c.series.mem[latch] = True  # breached in replay before this trigger was evaluated
+        return None
+    extreme = float(c.bar["high" if high else "low"])
+    breached = extreme > level if high else extreme < level
+    if breached:
+        c.series.mem[latch] = True
+        return Fire("long" if high else "short", level, note)
+    return None
+
+
 @_impl("hi_lo_60d")
 def _t_60d(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     days = int(p.get("days", 60) or 60)
@@ -951,27 +977,25 @@ def _t_60d(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
 @_impl("hi_lo_52w")
 def _t_52w(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     lvl = c.series.daily.get("hi_52w" if opt == "high" else "lo_52w")
-    if lvl is None:
-        return None
-    if _cross(c.prev_close, c.close, lvl, opt == "high"):
-        return Fire("long" if opt == "high" else "short", lvl, f"{c.series.daily.get('days')}-day {opt} {lvl:.2f}")
-    return None
+    prior = c.series.prev_day_high if opt == "high" else c.series.prev_day_low
+    return _first_milestone_breach(c, "hi_lo_52w", opt, lvl, prior,
+                                   f"first {c.series.daily.get('days')}-day {opt} beyond {lvl:.2f}" if lvl is not None else "")
 
 
 @_impl("prior_day_break")
 def _t_pd(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     lvl = c.level("prior_high" if opt == "high" else "prior_low")
-    if _cross(c.prev_close, c.close, lvl, opt == "high"):
-        return Fire("long" if opt == "high" else "short", lvl, f"prior day {opt} {lvl:.2f}")
-    return None
+    prior = c.series.prev_ext_high if opt == "high" else c.series.prev_ext_low
+    return _first_milestone_breach(c, "prior_day_break", opt, lvl, prior,
+                                   f"first prior day {opt} beyond {lvl:.2f}" if lvl is not None else "")
 
 
 @_impl("pm_break")
 def _t_pm(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     lvl = c.level("pm_high" if opt == "high" else "pm_low")
-    if _cross(c.prev_close, c.close, lvl, opt == "high"):
-        return Fire("long" if opt == "high" else "short", lvl, f"premarket {opt} {lvl:.2f}")
-    return None
+    prior = c.series.prev_day_high if opt == "high" else c.series.prev_day_low
+    return _first_milestone_breach(c, "pm_break", opt, lvl, prior,
+                                   f"first premarket {opt} beyond {lvl:.2f}" if lvl is not None else "")
 
 
 def _new_candle_extreme(c: EvalCtx, tf: int, since: int, side: str) -> Optional[Fire]:

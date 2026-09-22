@@ -43,7 +43,7 @@ from scanner.conditions import (
 )
 from scanner.json_store import _read_json, _write_json_atomic, sanitize_id
 from scanner.trigger_catalog import (
-    BY_ID, EvalCtx, Fire, SymbolSeries, describe, et_minutes, evaluate, n_day_latch_key,
+    BY_ID, EvalCtx, Fire, SymbolSeries, describe, et_minutes, evaluate, n_day_latch_key, milestone_latch_key,
     n_day_level, trigger_key,
 )
 
@@ -762,6 +762,11 @@ class CustomEvaluator:
                             state_note = f"already alerted for the {o} side this trading day"
                     elif t["id"] == "hi_lo_52w":
                         level = series.daily.get("hi_52w" if o == "high" else "lo_52w")
+                        if series.mem.get(milestone_latch_key(t["id"], o)):
+                            state_note = f"already alerted for the {o} side this trading day"
+                    elif t["id"] in ("prior_day_break", "pm_break"):
+                        if series.mem.get(milestone_latch_key(t["id"], o)):
+                            state_note = f"already alerted for the {o} side this trading day"
                 except Exception:
                     level = None
                 rows.append({
@@ -769,7 +774,8 @@ class CustomEvaluator:
                     "label": describe(t["id"], o, t.get("params") or {}),
                     "source": tdef.source if tdef else "native",
                     "fired_last_bar": bool(ev.get("fired")), "value": ev.get("value"),
-                    "note": ev.get("note") or state_note,
+                    "note": state_note or ev.get("note"),
+                    "lifetime": tdef.lifetime if tdef else None,
                     "level": level, "last_eval": ev.get("ts"),
                     "fires_today": self._stats.get(setup["id"], {}).get(instance_key, 0),
                 })

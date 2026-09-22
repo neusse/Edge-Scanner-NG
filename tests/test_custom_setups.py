@@ -1092,6 +1092,83 @@ def test_n_day_stock_check_explains_the_daily_latch(tmp_path):
     assert row["note"] == "already alerted for the high side this trading day"
 
 
+@pytest.mark.parametrize("trigger,level", [
+    ("hi_lo_52w", 101.0), ("prior_day_break", 101.0), ("pm_break", 101.0),
+])
+def test_reference_milestone_fires_on_first_strict_wick_only(trigger, level):
+    from types import SimpleNamespace
+    from scanner.trigger_catalog import EvalCtx, _IMPL
+
+    series, _ = _nday_seeded_series([99.0, 100.0, 101.0])
+    state = SimpleNamespace(symbol="X", prior_high=level, prior_low=90.0,
+                            pm_high=level, pm_low=90.0)
+
+    def step(minute, high, close=100.0):
+        bar = {"open": close, "high": high, "low": 95.0, "close": close, "volume": 1}
+        session = series.on_bar(bar, minute, "2026-09-14", None)
+        ctx = EvalCtx(state=state, series=series, bar=bar, et_min=minute,
+                      session=session, external=set())
+        return _IMPL[trigger](ctx, "high", {})
+
+    assert step(570, level) is None
+    first = step(571, level + .25)
+    assert first is not None and first.value == level
+    assert step(572, 100.5) is None
+    assert step(573, 102.0) is None
+
+
+def test_reference_milestone_restart_replay_suppresses_late_alert():
+    from types import SimpleNamespace
+    from scanner.trigger_catalog import EvalCtx, _IMPL
+
+    for trigger in ("hi_lo_52w", "prior_day_break", "pm_break"):
+        series, _ = _nday_seeded_series([99.0, 100.0, 101.0])
+        state = SimpleNamespace(symbol="X", prior_high=101.0, prior_low=90.0,
+                                pm_high=101.0, pm_low=90.0)
+        for minute, high in ((570, 101.0), (571, 101.5)):
+            series.on_bar({"open": 100.0, "high": high, "low": 95.0,
+                           "close": 100.0, "volume": 1}, minute, "2026-09-14", None)
+        bar = {"open": 100.0, "high": 102.0, "low": 95.0, "close": 100.0, "volume": 1}
+        session = series.on_bar(bar, 572, "2026-09-14", None)
+        ctx = EvalCtx(state=state, series=series, bar=bar, et_min=572,
+                      session=session, external=set())
+        assert _IMPL[trigger](ctx, "high", {}) is None
+
+
+def test_historical_high_latch_does_not_suppress_later_hod():
+    from types import SimpleNamespace
+    from scanner.trigger_catalog import EvalCtx, _IMPL
+
+    series, _ = _nday_seeded_series([99.0, 100.0, 101.0])
+    state = SimpleNamespace(symbol="X")
+    def step(minute, high):
+        bar = {"open": 100.0, "high": high, "low": 95.0, "close": 100.0, "volume": 1}
+        session = series.on_bar(bar, minute, "2026-09-14", None)
+        return EvalCtx(state=state, series=series, bar=bar, et_min=minute,
+                       session=session, external=set())
+
+    first = step(570, 101.5)
+    assert _IMPL["hi_lo_52w"](first, "high", {}) is not None
+    later = step(571, 102.0)
+    assert _IMPL["hi_lo_52w"](later, "high", {}) is None
+    hod = _IMPL["hod"](later, "high", {})
+    assert hod is not None and hod.direction == "long"
+
+
+def test_reference_milestone_stock_check_exposes_lifetime_and_latch(tmp_path):
+    from scanner.trigger_catalog import milestone_latch_key
+
+    setup = _setup("s1", [{"id": "hi_lo_52w", "options": ["high"]}])
+    ev = _evaluator(tmp_path, setup)
+    series = ev.series("X")
+    series.daily["hi_52w"] = 101.0
+    series.mem[milestone_latch_key("hi_lo_52w", "high")] = True
+    row = ev.check(ev.store.get("s1"), _state(symbol="X"))["triggers"][0]
+    assert row["level"] == 101.0
+    assert row["lifetime"] == "first_breach_per_day"
+    assert "already alerted" in row["note"]
+
+
 # ── VWAP support / resistance: candle size and touch tolerance unit ─────────
 
 def _vs_hits(minutes, tf, tol, unit, atr=2.0, vwap=100.0):
