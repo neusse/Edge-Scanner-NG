@@ -534,9 +534,16 @@ class CustomEvaluator:
         fires: dict[str, Fire] = {}
         snap: dict[str, dict] = {}
         for (tid, opt), users in plan.keys.items():
+            eligible = [
+                (setup_index, tcfg)
+                for setup_index, tcfg in users
+                if sess in plan.setups[setup_index].get("sessions", ["rth"])
+            ]
+            if not eligible:
+                continue
             # every user of this key shares params only when identical; evaluate per distinct params
             done: dict[str, Optional[Fire]] = {}
-            for _, tcfg in users:
+            for _, tcfg in eligible:
                 pkey = json.dumps(tcfg.get("params") or {}, sort_keys=True)
                 if pkey in done:
                     continue

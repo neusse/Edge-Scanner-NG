@@ -117,6 +117,32 @@ def test_direction_filter_and_sessions(tmp_path):
     assert len(_run(ev3, st3, [100.0, 101.0, 102.0], start="09:00")) == 2
 
 
+def test_out_of_session_streak_does_not_consume_first_rth_edge(tmp_path):
+    ev = _evaluator(
+        tmp_path,
+        _setup(
+            "rth-streak",
+            [{"id": "consec_candles", "options": ["green"], "params": {"count": 3, "tf": 1}}],
+        ),
+    )
+    st = SimpleNamespace(symbol="AAPL")
+
+    for minute in range(4):
+        price = 100.0 + minute
+        bar = _bar(price, et=f"2024-01-02 08:0{minute}", o=price - 0.5)
+        assert ev.on_bar(st, bar) == []
+
+    alerts = []
+    for minute in range(4):
+        price = 110.0 + minute
+        bar = _bar(price, et=f"2024-01-02 09:3{minute}", o=price - 0.5)
+        alerts.extend(ev.on_bar(st, bar))
+
+    assert len(alerts) == 1
+    assert alerts[0]["setup"] == "rth-streak"
+    assert alerts[0]["timestamp"].startswith("2024-01-02T09:33")
+
+
 def test_cross_above_vwap_and_prior_close(tmp_path):
     ev = _evaluator(tmp_path, _setup("s1", [{"id": "cross_above", "options": ["prior_close", "vwap"]}]))
     st = _state(prior_close=100.0)
@@ -148,6 +174,25 @@ def test_bull_engulfing_on_completed_5min_candle(tmp_path):
         st.on_bar(bar)
         out.extend(ev.on_bar(st, bar, set()))
     assert len(out) == 1 and out[0]["direction"] == "long" and "engulfing" in out[0]["trigger_note"]
+
+
+def test_bull_engulfing_does_not_pair_candles_from_different_days(tmp_path):
+    ev = _evaluator(tmp_path, _setup("s1", [{"id": "bull_engulfing", "options": ["5"]}]))
+    st = SimpleNamespace(symbol="AAPL")
+
+    prior_closes = [100.5, 100.0, 99.7, 99.3, 99.0]
+    for minute, close in enumerate(prior_closes, start=55):
+        ev.on_bar(st, _bar(close, et=f"2024-01-02 15:{minute}", o=101.0 if minute == 55 else close))
+
+    alerts = []
+    current_closes = [99.0, 99.5, 100.0, 100.7, 101.5, 101.4]
+    for minute, close in enumerate(current_closes, start=30):
+        alerts.extend(ev.on_bar(
+            st,
+            _bar(close, et=f"2024-01-03 09:{minute}", o=98.5 if minute == 30 else close),
+        ))
+
+    assert alerts == []
 
 
 def test_orb_breakout_once_per_day(tmp_path):
@@ -541,6 +586,21 @@ def test_range_break_fires_when_a_tight_range_breaks_on_volume(tmp_path):
     assert "range high" in out[0]["trigger_note"]
 
 
+def test_range_break_does_not_use_prior_day_consolidation(tmp_path):
+    ev = _evaluator(
+        tmp_path,
+        _setup("cs_x", _rb(tf=5, vol_mult=1.0), direction="long"),
+    )
+    st = SimpleNamespace(symbol="AAA")
+    start = pd.Timestamp("2024-01-02 15:35", tz="America/New_York")
+    for offset in range(25):
+        et = start + pd.Timedelta(minutes=offset)
+        ev.on_bar(st, _bar(100.0, et=et.strftime("%Y-%m-%d %H:%M"), vol=100.0))
+
+    alerts = ev.on_bar(st, _bar(102.0, et="2024-01-03 09:30", vol=1_000.0))
+    assert alerts == []
+
+
 def test_range_break_ignores_a_break_without_volume(tmp_path):
     ev = _evaluator(tmp_path, _setup("cs_x", _rb(vol_mult=3.0), direction="long"))
     st = _state(symbol="AAA", prior_close=100.0)
@@ -667,6 +727,25 @@ def test_a_5_min_close_through_vwap_fires_once_when_the_candle_completes():
     hits = _fires(below + above + [(100.5, 100.0)], "cross_above", "vwap", 5)
     assert [i for i, _ in hits] == [10]           # the bar that completes 10:05-10:09
     assert hits[0][1].direction == "long" and "5 Min close" in hits[0][1].note
+
+
+def test_through_vwap_does_not_use_premarket_range_as_rth_baseline(tmp_path):
+    ev = _evaluator(
+        tmp_path,
+        _setup("through", [{"id": "through_vwap", "options": ["above"], "params": {"mult": 3.0}}]),
+    )
+    st = SimpleNamespace(symbol="AAPL", vwap=100.0)
+    for minute in range(10):
+        ev.on_bar(
+            st,
+            _bar(99.5, et=f"2024-01-02 09:{10 + minute}", h=99.55, l=99.45),
+        )
+
+    alerts = ev.on_bar(
+        st,
+        _bar(101.0, et="2024-01-02 09:30", h=102.0, l=99.5),
+    )
+    assert alerts == []
 
 
 def test_a_1_min_poke_that_fails_inside_the_candle_does_not_count_on_5_min():
