@@ -8,6 +8,7 @@ from scanner.indicators.vwap import session_vwap, vwap_update
 from scanner.indicators.rvol import build_volume_profile, compute_rvol
 from scanner.indicators.chart_quality import chart_quality
 from scanner.indicators.adx import adx
+from scanner.indicators.atr import wilder_atr
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -162,6 +163,27 @@ def test_compute_rvol_empty_profile():
 
 
 # ── ADX ────────────────────────────────────────────────────────────────
+
+def test_wilder_atr_uses_arithmetic_seed_then_wilder_recurrence():
+    # Flat closes make the candle ranges the exact true ranges: 1, 2.5, 4, 5, 2.
+    ranges = pd.Series([1.0, 2.5, 4.0, 5.0, 2.0], index=_daily_index(5))
+    close = pd.Series(100.0, index=ranges.index)
+    out = wilder_atr(close + ranges / 2, close - ranges / 2, close, 3)
+
+    assert out.iloc[:2].isna().all()
+    assert out.iloc[2:].tolist() == pytest.approx([2.5, 10 / 3, 26 / 9])
+
+
+def test_wilder_atr_waits_for_fresh_complete_history_after_a_missing_candle():
+    ranges = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], index=_daily_index(6))
+    close = pd.Series(100.0, index=ranges.index)
+    high = close + ranges / 2
+    high.iloc[2] = float("nan")
+    out = wilder_atr(high, close - ranges / 2, close, 3)
+
+    assert out.iloc[:5].isna().all()
+    assert out.iloc[5] == pytest.approx(5.0)
+
 
 def test_adx_reaches_100_for_a_one_way_trend():
     idx = _daily_index(60)
