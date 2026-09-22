@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
+  <title id="title">Edge Scanner NG</title>
+  <desc id="desc">A dark trading dashboard with live candlesticks, momentum lines, and scanner alerts</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="0.55" stop-color="#0b1a2e"/>
+      <stop offset="1" stop-color="#101a2b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#39d98a"/>
+      <stop offset="0.55" stop-color="#42a5ff"/>
+      <stop offset="1" stop-color="#8b7dff"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#14243a" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#0c1728" stop-opacity="0.96"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="44%" r="55%">
+      <stop offset="0" stop-color="#2d8cff" stop-opacity="0.23"/>
+      <stop offset="1" stop-color="#2d8cff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000814" flood-opacity="0.55"/>
+    </filter>
+    <filter id="softGlow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="7" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <clipPath id="chartClip"><rect x="650" y="120" width="820" height="286" rx="16"/></clipPath>
+    <pattern id="grid" width="82" height="58" patternUnits="userSpaceOnUse">
+      <path d="M82 0H0V58" fill="none" stroke="#7791b1" stroke-opacity="0.11" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="520" rx="28" fill="url(#bg)"/>
+  <rect width="1600" height="520" rx="28" fill="url(#glow)"/>
+  <path d="M0 418C235 348 336 498 557 420S913 281 1138 355s311 34 462-41v206H0Z" fill="#0a2a35" opacity="0.33"/>
+  <path d="M0 454C250 396 356 514 576 448s364-141 572-62 324 17 452-32v166H0Z" fill="#102c4d" opacity="0.38"/>
+
+  <g transform="translate(92 91)">
+    <g filter="url(#softGlow)">
+      <path d="M12 76 47 41l34 34 51-60" fill="none" stroke="url(#accent)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="m111 15 21 0 0 21" fill="none" stroke="#8b7dff" stroke-width="9" stroke-linecap="round"/>
+    </g>
+    <text x="0" y="148" fill="#f4f8ff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="68" font-weight="750" letter-spacing="-2">EDGE SCANNER</text>
+    <text x="0" y="208" fill="url(#accent)" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="36" font-weight="800" letter-spacing="6.5">NEXT GENERATION</text>
+    <text x="2" y="260" fill="#9fb2cc" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22" letter-spacing="1.6">LOCAL-FIRST • REAL-TIME • COMPOSABLE</text>
+
+    <g transform="translate(0 304)">
+      <rect width="174" height="48" rx="24" fill="#102e2a" stroke="#39d98a" stroke-opacity="0.55"/>
+      <circle cx="26" cy="24" r="6" fill="#39d98a" filter="url(#softGlow)"/>
+      <text x="44" y="31" fill="#c9ffe5" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="650">LIVE STREAM</text>
+      <rect x="190" width="182" height="48" rx="24" fill="#10243d" stroke="#42a5ff" stroke-opacity="0.55"/>
+      <path d="M218 17v14M211 24h14" stroke="#42a5ff" stroke-width="2.5" stroke-linecap="round"/>
+      <text x="238" y="31" fill="#d7ebff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="650">YOUR SETUPS</text>
+    </g>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="618" y="82" width="884" height="356" rx="22" fill="url(#panel)" stroke="#36506f" stroke-width="1.5"/>
+    <rect x="618" y="82" width="884" height="50" rx="22" fill="#182a42"/>
+    <path d="M618 110h884v22H618Z" fill="#182a42"/>
+    <circle cx="650" cy="107" r="6" fill="#ff5d67"/>
+    <circle cx="672" cy="107" r="6" fill="#ffbf47"/>
+    <circle cx="694" cy="107" r="6" fill="#39d98a"/>
+    <text x="730" y="114" fill="#a9bad0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" letter-spacing="1.1">MARKET PULSE / LIVE</text>
+    <rect x="1372" y="94" width="103" height="26" rx="13" fill="#103329" stroke="#39d98a" stroke-opacity="0.42"/>
+    <circle cx="1391" cy="107" r="4" fill="#39d98a"/>
+    <text x="1402" y="112" fill="#bff8db" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700">CONNECTED</text>
+  </g>
+
+  <g clip-path="url(#chartClip)">
+    <rect x="650" y="120" width="820" height="286" fill="url(#grid)"/>
+    <path d="M650 344C718 331 743 350 794 317s80-69 131-48 79 32 128-9 88-107 145-84 84 92 133 54 67-29 139-87" fill="none" stroke="#42a5ff" stroke-opacity="0.35" stroke-width="20"/>
+    <path d="M650 344C718 331 743 350 794 317s80-69 131-48 79 32 128-9 88-107 145-84 84 92 133 54 67-29 139-87" fill="none" stroke="#42a5ff" stroke-width="3"/>
+
+    <g stroke-width="3">
+      <g stroke="#ff6470" fill="#ff6470"><path d="M690 327v-77"/><rect x="680" y="268" width="20" height="38" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M735 296v-92"/><rect x="725" y="228" width="20" height="48" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M780 268v-86"/><rect x="770" y="204" width="20" height="43" rx="2"/></g>
+      <g stroke="#ff6470" fill="#ff6470"><path d="M825 272v-61"/><rect x="815" y="220" width="20" height="35" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M870 252v-106"/><rect x="860" y="169" width="20" height="59" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M915 202v-79"/><rect x="905" y="142" width="20" height="43" rx="2"/></g>
+      <g stroke="#ff6470" fill="#ff6470"><path d="M960 244v-95"/><rect x="950" y="164" width="20" height="57" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M1005 226v-80"/><rect x="995" y="177" width="20" height="31" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M1050 210v-96"/><rect x="1040" y="136" width="20" height="53" rx="2"/></g>
+      <g stroke="#ff6470" fill="#ff6470"><path d="M1095 213v-66"/><rect x="1085" y="160" width="20" height="36" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M1140 183v-98"/><rect x="1130" y="111" width="20" height="48" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M1185 155v-78"/><rect x="1175" y="94" width="20" height="41" rx="2"/></g>
+      <g stroke="#ff6470" fill="#ff6470"><path d="M1230 190v-83"/><rect x="1220" y="120" width="20" height="48" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M1275 169v-89"/><rect x="1265" y="103" width="20" height="44" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M1320 142v-91"/><rect x="1310" y="75" width="20" height="43" rx="2"/></g>
+      <g stroke="#39d98a" fill="#39d98a"><path d="M1365 109v-72"/><rect x="1355" y="55" width="20" height="37" rx="2"/></g>
+    </g>
+
+    <path d="M650 298C739 301 789 282 861 251s136-20 203-59 133-83 208-68 130-24 198-62" fill="none" stroke="#ffbd4a" stroke-width="2.5" stroke-dasharray="8 7" opacity="0.9"/>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="1170" y="304" width="276" height="105" rx="16" fill="#12263e" stroke="#3c5878"/>
+    <circle cx="1200" cy="335" r="8" fill="#39d98a"/>
+    <text x="1220" y="341" fill="#dce9f8" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="750">ORB BREAKOUT</text>
+    <text x="1192" y="374" fill="#8fa6c1" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14">RVOL 3.4×  •  SCORE 92</text>
+    <rect x="1369" y="326" width="53" height="24" rx="12" fill="#12382e"/>
+    <text x="1382" y="343" fill="#70e9ac" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="800">LONG</text>
+  </g>
+
+  <rect x="1" y="1" width="1598" height="518" rx="27" fill="none" stroke="url(#accent)" stroke-opacity="0.35" stroke-width="2"/>
+</svg>

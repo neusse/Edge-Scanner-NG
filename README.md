@@ -1,7 +1,17 @@
-# Edge Scanner
+<p align="center">
+  <img src="docs/assets/edge-scanner-ng-banner.svg" width="100%" alt="Edge Scanner NG real-time market scanner dashboard">
+</p>
 
+<h1 align="center">Edge Scanner NG</h1>
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center"><strong>Local-first market scanning. Your data. Your setups. Your edge.</strong></p>
+
+<p align="center">
+  <a href="https://github.com/neusse/Edge-Scanner-NG/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/neusse/Edge-Scanner-NG/actions/workflows/ci.yml/badge.svg"></a>
+  <img alt="Python 3.11+" src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&amp;logoColor=white">
+  <img alt="Node.js 20+" src="https://img.shields.io/badge/Node.js-20%2B-339933?logo=nodedotjs&amp;logoColor=white">
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-42a5ff.svg"></a>
+</p>
 
 A real-time intraday stock scanner for US equities that runs on your own machine. It streams
 1-minute bars for thousands of symbols, checks the setups you define on every bar, and shows the
