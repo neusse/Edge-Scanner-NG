@@ -1546,9 +1546,9 @@ def _t_vwap_v(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     atr = _f(getattr(c.state, "atr_d1", None))
     if not atr or atr <= 0:
         return None
-    cs = c.series.last_completed(tf, n)
-    # Today's regular-session candles only: seeded history and premarket carry
-    # no VWAP, and VWAP resets each session.
+    cs = _session_completed(c, tf, n)
+    # Only candles from this date and session share a VWAP anchor. A previous
+    # session's approach cannot supply the distance/dwell for today's V.
     if len(cs) < n or any(x.get("vwap") is None for x in cs):
         return None
     band, away = float(p["band_atr"]) * atr, float(p["away_atr"]) * atr

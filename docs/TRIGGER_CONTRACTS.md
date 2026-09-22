@@ -41,7 +41,7 @@ sink can further suppress publication; those do not change the trigger's event c
 | `consec_candles` | streak_edge | Pre, RTH | Fires when completed same-color streak first reaches N; opposite candle re-arms. |
 | `cross_above` | recross | Pre, RTH | Prior close at/below and current close strictly above selected level; higher timeframe uses completed candles. |
 | `cross_below` | recross | Pre, RTH | Prior close at/above and current close strictly below selected level; higher timeframe uses completed candles. |
-| `vwap_v` | completed_candle | Pre, RTH | Completed touch candle snaps back from distance with bounded prior dwell. |
+| `vwap_v` | completed_candle | Pre, RTH | Completed touch candle snaps back from distance with bounded prior dwell in the same date/session. |
 | `range_break` | range_exit_edge | Pre, RTH | Close exits tight N-candle range on qualifying per-minute volume; re-arms on return inside. |
 | `ema_cross_ema` | recross | Pre, RTH | Fast/slow EMA strict cross after both are warmed on completed candles. |
 | `through_vwap` | recross | RTH | Close crosses VWAP on a 1m candle meeting range/average multiplier. |
@@ -58,5 +58,13 @@ sink can further suppress publication; those do not change the trigger's event c
 The executable cases in `tests/test_custom_setups.py`, `tests/test_trigger_contracts.py`, and
 `tests/test_live_scanner.py` cover event families, strict/equality boundaries, session filtering,
 restart priming, parameter-distinct instances, Setup Check levels/notes, and emitted evidence.
+The suite combines actual native-trigger positive/negative fixtures (including all candle-pattern,
+milestone, level, VWAP, EMA, volume, and momentum families) with 45-row evaluator integration
+checks for session gating, first-live-bar replay memory, alert identity/evidence, and Setup Check.
+The integration checks substitute a deterministic firing condition to isolate routing and payload
+behavior; they are not presented as proof of each indicator's price arithmetic. The native fixtures
+exercise that arithmetic separately. The date-boundary fixtures specifically guard against a
+previous-day candle being reported as newly completed, a double-inside pattern spanning sessions,
+and a VWAP V borrowing the previous session's approach.
 Pass-through `setup:*` triggers are not native; their event lifetime belongs to the producing
 system setup and is reported as `upstream_setup`.
