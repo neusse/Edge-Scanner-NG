@@ -427,7 +427,8 @@ def main() -> None:
     _step(5, TOTAL_STEPS, "Warming up scanner ...")
     scanner = LiveScanner(symbols, feed, sector_map=sector_map)
     app_state = AppState(scanner=scanner, feed=feed, keep_days=args.keep_days,
-                         hub=FeedHub(store_dir=Path(args.alerts_dir) / "all", keep_days=args.keep_days))
+                         hub=FeedHub(store_dir=Path(args.alerts_dir) / "all", keep_days=args.keep_days,
+                                     load_persisted=True))
     # Dashboard V2: shared HOD/LOD event buffer. Created here so the API (api_v2)
     # and the post-bar hook below see the same instance.
     event_buffer = EventBuffer()
