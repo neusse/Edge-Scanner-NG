@@ -353,7 +353,14 @@ class LiveScanner:
         state.on_bar(bar, spy_bar, sector_bar)
         if before_opening_rvol is None and state.opening_rvol_m5 is not None:
             self._refresh_opening_rvol_ranks()
-        self._advance_series(state, bar)
+        session = self._advance_series(state, bar)
+        if self._custom_evaluator is not None:
+            self._custom_evaluator.prime_bar(
+                state,
+                bar,
+                session,
+                spy_mom_15m=(self._spy_state.mom_15m_pct if self._spy_state else None),
+            )
         return True
 
     def _refresh_opening_rvol_ranks(self) -> None:

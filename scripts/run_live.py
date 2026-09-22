@@ -434,6 +434,13 @@ def main() -> None:
     app_state.event_buffer = event_buffer
     scanner.warmup(spy_daily, symbol_daily, sector_daily=sector_daily, bars_5m=bars_5m)
 
+    # Load custom trigger definitions before replaying today's bars. The replay
+    # can then prime edge/once memory without emitting alerts, so a mid-session
+    # start does not announce an opening event as if it just happened.
+    custom_eval = CustomEvaluator()
+    scanner.attach_custom(custom_eval)
+    custom_eval.warmup(symbol_daily, bars_5m)
+
     ready_count   = len(scanner._states)
     sector_mapped = sum(1 for s in scanner._states if s in sector_map)
     rvol_ready    = sum(1 for s in scanner._states if not scanner._states[s].volume_profile.empty)
@@ -633,12 +640,9 @@ def main() -> None:
     if custom_sink is None:
         custom_sink = app_state.hub.tap(_CustomPrintSink(), "custom")
     # Custom setups (dashboard Config > Setups): universe + composed triggers,
-    # setup=<custom id>, custom=true. Attach BEFORE warmup: attaching hands the
-    # evaluator the scanner's already-seeded series store, so warmup then only
-    # registers the EMAs the plan needs instead of seeding a second set.
-    custom_eval = CustomEvaluator()
+    # setup=<custom id>, custom=true. The evaluator was attached before today's
+    # bars were replayed; replace its temporary sink with the unified feed sink.
     scanner.attach_custom(custom_eval, custom_sink)
-    custom_eval.warmup(symbol_daily, bars_5m)
     app_state.custom_eval = custom_eval
 
     # Universe profiles: the screen each setup is checked against before an

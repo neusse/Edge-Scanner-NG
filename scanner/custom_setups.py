@@ -471,6 +471,41 @@ class CustomEvaluator:
         self._last_eval = {}
         self._since = pd.Timestamp.utcnow().isoformat()
 
+    def prime_bar(self, state: Any, bar: dict, session: str,
+                  external: Optional[set[str]] = None,
+                  spy_mom_15m: Optional[float] = None) -> None:
+        """Advance trigger memory for a replayed bar without building alerts."""
+        plan = self._plan
+        if not plan.keys:
+            return
+        ts = pd.Timestamp(bar["timestamp"])
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        et = ts.tz_convert("America/New_York")
+        ctx = EvalCtx(
+            state=state,
+            series=self.series(state.symbol),
+            bar=bar,
+            et_min=et.hour * 60 + et.minute,
+            session=session,
+            external=external or set(),
+            spy_mom_15m=spy_mom_15m,
+        )
+        for (tid, opt), users in plan.keys.items():
+            primed: set[str] = set()
+            for setup_index, tcfg in users:
+                if session not in plan.setups[setup_index].get("sessions", ["rth"]):
+                    continue
+                pkey = json.dumps(tcfg.get("params") or {}, sort_keys=True)
+                if pkey in primed:
+                    continue
+                primed.add(pkey)
+                try:
+                    evaluate(tid, ctx, opt, tcfg.get("params") or {})
+                except Exception as exc:
+                    log.debug("trigger %s:%s prime failed for %s: %s",
+                              tid, opt, state.symbol, exc)
+
     # ── per bar ──
     def on_bar(self, state: Any, bar: dict, external: Optional[set[str]] = None,
                spy_mom_15m: Optional[float] = None, session: Optional[str] = None) -> list[dict]:
