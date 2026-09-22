@@ -3,7 +3,7 @@
 ## Summary
 
 - Problem: Traders need to discover a focused set of symbols without subscribing Schwab to an unknown or ever-growing union of lists.
-- Target users: A local Edge Scanner user preparing a known universe before a trading session.
+- Target users: A local Edge Scanner NG user preparing a known universe before a trading session.
 - Proposed solution: Add a Yahoo-backed Screener window that saves snapshots to described watchlists, and allow exactly one watchlist to be selected as the scanner universe for the next restart.
 - Version: 1.0
 - Status: Approved for implementation

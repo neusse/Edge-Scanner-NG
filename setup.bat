@@ -1,9 +1,9 @@
 @echo off
 setlocal
-title Edge Scanner Setup
+title Edge Scanner NG Setup
 cd /d "%~dp0"
 
-echo Edge Scanner setup
+echo Edge Scanner NG setup
 echo.
 
 where python >nul 2>nul

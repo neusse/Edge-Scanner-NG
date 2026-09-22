@@ -27,7 +27,7 @@
         "id": "integration-path",
         "label": "External alert consumers",
         "focus": ["setup-engine", "alert-api", "consumers"],
-        "note": "Other local programs subscribe to the unified alert WebSocket; Edge Scanner does not place orders."
+        "note": "Other local programs subscribe to the unified alert WebSocket; Edge Scanner NG does not place orders."
       }
     ]
   },
@@ -177,7 +177,7 @@
     {
       "dot": "amber",
       "title": "Execution boundary",
-      "items": ["Edge Scanner emits observations and suggested risk context", "Downstream software owns duplicate handling, risk controls, and orders"]
+      "items": ["Edge Scanner NG emits observations and suggested risk context", "Downstream software owns duplicate handling, risk controls, and orders"]
     }
   ]
 }

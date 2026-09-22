@@ -1,7 +1,7 @@
 @import url("https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500;600&display=swap");
 
 /* ============================================================
-   Edge Scanner: design tokens (navy = dark default, daylight = light mode)
+   Edge Scanner NG: design tokens (navy = dark default, daylight = light mode)
    Rule: this is the ONLY file allowed to contain color literals.
    ============================================================ */
 :root {

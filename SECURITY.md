@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Edge Scanner is an actively developed open-source project.
+Edge Scanner NG is an actively developed open-source project.
 
 Security fixes are generally applied to the latest released version and the current `main` branch.
 
@@ -14,9 +14,9 @@ Security fixes are generally applied to the latest released version and the curr
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in Edge Scanner, please **do not open a public GitHub issue**.
+If you discover a security vulnerability in Edge Scanner NG, please **do not open a public GitHub issue**.
 
-Instead, please use GitHub's **private vulnerability reporting** feature from the Security section of this repository.
+Instead, use [Edge Scanner NG's private vulnerability reporting](https://github.com/neusse/Edge-Scanner-NG/security/advisories/new).
 
 Please include, when possible:
 
@@ -30,7 +30,7 @@ Please avoid publicly disclosing the vulnerability until it has been reviewed an
 
 ## Security-Sensitive Areas
 
-Edge Scanner works with potentially sensitive information including:
+Edge Scanner NG works with potentially sensitive information including:
 
 - Market-data API credentials for Alpaca and Charles Schwab, read from your local `.env`
 - A Schwab login token stored by the schwabdev library in your home folder
@@ -41,7 +41,7 @@ Reports involving exposure of this information, unauthorized access, credential 
 
 ## Data and Credentials
 
-Edge Scanner is designed as a local-first application.
+Edge Scanner NG is designed as a local-first application.
 
 Users should never commit API keys, `.env` files, local databases, exports, or other private data to the repository.
 

@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Ask a question
-    url: https://github.com/simonro/edge-scanner/discussions
+    url: https://github.com/neusse/Edge-Scanner-NG/discussions
     about: Setup help, how-to questions and ideas go in Discussions.
   - name: Report a security problem
-    url: https://github.com/simonro/edge-scanner/security/advisories/new
+    url: https://github.com/neusse/Edge-Scanner-NG/security/advisories/new
     about: Report it privately, never in a public issue. See SECURITY.md.

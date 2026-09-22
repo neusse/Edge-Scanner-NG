@@ -18,7 +18,7 @@
     <article class="item"><h2>Live-alert sequence</h2><p>Follow subscription replay and one completed minute bar through state, evaluation, archival, and delivery.</p><a href="live-alert.html">Open interactive sequence →</a></article>
   </div>
   <h2>Key finding</h2>
-  <p>Edge Scanner has one in-process market-data path and one accepted-alert distribution path. The dashboard and other local programs consume signals from the same hub; they do not share brokerage authority.</p>
+  <p>Edge Scanner NG has one in-process market-data path and one accepted-alert distribution path. The dashboard and other local programs consume signals from the same hub; they do not share brokerage authority.</p>
   <div class="note"><strong>Integration status:</strong> the current WebSocket is useful, but its sequence number is process-local. The durable, versioned trading-code contract is tracked in <a href="https://github.com/neusse/Edge-Scanner-NG/issues/17">issue #17</a>.</div>
   <h2>Evidence and validation</h2>
   <p>The architecture source pins commit <code>a9a9d7854c9a11cd9cceea5dfae267286d18200c</code>. All artifacts pass nine Archify showcase checks with no composition errors or warnings, plus desktop light/dark containment and readability checks at four viewport sizes.</p>

@@ -37,7 +37,7 @@ they are not anyone's real account, positions or orders.
 
 ## Privacy and your data
 
-Edge Scanner is local-first. The scanner and the dashboard listen on `localhost` only, and there is
+Edge Scanner NG is local-first. The scanner and the dashboard listen on `localhost` only, and there is
 no login because nothing is exposed to the network.
 
 - **Stays on your machine:** your API keys in `.env`, the setups, universe filters, watchlists and
@@ -117,8 +117,8 @@ installs everything, builds the dashboard and creates `.env`. Then add your keys
 By hand, or on macOS and Linux:
 
 ```bash
-git clone https://github.com/simonro/edge-scanner.git
-cd edge-scanner
+git clone https://github.com/neusse/Edge-Scanner-NG.git
+cd Edge-Scanner-NG
 python -m venv .venv
 ```
 
@@ -229,10 +229,12 @@ the setup, the tests a change needs, and how to add a trigger, a condition or a 
 Please report security problems privately, as described in [SECURITY.md](SECURITY.md), not in a
 public issue.
 
-## Who made this / Not me,  this guy made it.  This is my Fork.  
+## Origins and attribution
 
-A day trader who wanted scans that match how he actually trades, and a dashboard that fits one
-ultrawide monitor. Built by describing the problems to Claude Code.
+Edge Scanner NG began as a hard fork of the original Edge Scanner project created by a day trader
+who wanted scans that match how he actually trades and a dashboard that fits one ultrawide monitor.
+The original project was built by describing the problems to Claude Code. Edge Scanner NG is now an
+independently maintained project and has diverged from that codebase.
 
 - YouTube: [@tapetoedge](https://www.youtube.com/@tapetoedge)
 - X: [@tapetoedge](https://x.com/tapetoedge)

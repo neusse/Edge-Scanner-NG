@@ -2,7 +2,7 @@
   "schema_version": 1,
   "diagram_type": "dataflow",
   "meta": {
-    "title": "Edge Scanner Alert Data Flow",
+    "title": "Edge Scanner NG Alert Data Flow",
     "output": "alert-pipeline.html",
     "quality_profile": "showcase",
     "viewBox": [1080, 560],

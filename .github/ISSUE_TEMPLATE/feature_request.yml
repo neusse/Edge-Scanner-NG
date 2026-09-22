@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Ideas and questions are also welcome in
-        [Discussions](https://github.com/simonro/edge-scanner/discussions). For a specific alert
+        [Discussions](https://github.com/neusse/Edge-Scanner-NG/discussions). For a specific alert
         pattern or filter, use the "Trigger or condition request" form instead.
   - type: textarea
     id: problem

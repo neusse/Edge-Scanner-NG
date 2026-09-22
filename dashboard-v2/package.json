@@ -2,7 +2,7 @@
   "name": "edge-scanner-dashboard",
   "private": true,
   "version": "2.0.0",
-  "description": "Edge Scanner dashboard: a multi-window web UI for live stock alerts, charts, rankings, news and setup configuration.",
+  "description": "Edge Scanner NG dashboard: a multi-window web UI for live stock alerts, charts, rankings, news and setup configuration.",
   "license": "MIT",
   "type": "module",
   "scripts": {

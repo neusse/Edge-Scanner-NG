@@ -1,4 +1,4 @@
-# Contributing to Edge Scanner
+# Contributing to Edge Scanner NG
 
 Thanks for helping. Bug reports, fixes and features are all welcome. This page covers how to set
 up, what to test, and what a pull request needs before it can be merged.
@@ -114,5 +114,5 @@ Keep user-facing text plain and specific: say what happened and what to do next.
 
 ## Questions
 
-Ask in [Discussions](https://github.com/simonro/edge-scanner/discussions). Never paste real account
+Ask in [Discussions](https://github.com/neusse/Edge-Scanner-NG/discussions). Never paste real account
 details or API keys.

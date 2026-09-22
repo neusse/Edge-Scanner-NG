@@ -1,6 +1,6 @@
-# Edge Scanner Dashboard
+# Edge Scanner NG Dashboard
 
-The web UI of Edge Scanner: a desktop-style, multi-window dashboard for the scanner engine. Windows float freely inside a fixed
+The web UI of Edge Scanner NG: a desktop-style, multi-window dashboard for the scanner engine. Windows float freely inside a fixed
 workspace: drag, resize, stack and maximize them, link them by color so a click on a symbol in one
 drives the others, and save the arrangement as named screens.
 

@@ -1,4 +1,4 @@
-# Edge Scanner - User Guide
+# Edge Scanner NG - User Guide
 
 A real-time intraday stock scanner. It streams 1-minute bars for a universe of US stocks, keeps per-symbol
 state (VWAP, relative volume, relative strength vs SPY, prior-day and premarket levels, EMAs and more), and
@@ -205,7 +205,7 @@ them will be disconnected.
 
 ## 4. The Dashboard
 
-The dashboard (branded **Edge Scanner**) is a desktop-style workspace of free-floating windows. Drag a
+The dashboard (branded **Edge Scanner NG**) is a desktop-style workspace of free-floating windows. Drag a
 window by its title bar, resize it from any edge, double-click the title bar to maximize, and hold `Alt`
 while dragging to turn off snapping.
 

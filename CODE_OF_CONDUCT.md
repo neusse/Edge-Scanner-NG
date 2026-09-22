@@ -1,6 +1,6 @@
 # Code of Conduct
 
-Edge Scanner is a small project built in the open. Everyone who takes part, in issues, pull
+Edge Scanner NG is a small project built in the open. Everyone who takes part, in issues, pull
 requests, discussions or anywhere else the project is represented, is expected to keep it a place
 where people can ask questions and disagree without being attacked.
 
@@ -22,7 +22,8 @@ where people can ask questions and disagree without being attacked.
 ## Enforcement
 
 The maintainer may edit or remove comments, close issues and pull requests, and block people who
-break these rules. To report a problem privately, message [@tapetoedge on X](https://x.com/tapetoedge)
-or use GitHub's private reporting on the Security tab. Reports are kept confidential.
+break these rules. To report a problem privately, use
+[Edge Scanner NG's private vulnerability reporting](https://github.com/neusse/Edge-Scanner-NG/security/advisories/new).
+Reports are kept confidential.
 
 This code is adapted from the ideas in the [Contributor Covenant](https://www.contributor-covenant.org/).

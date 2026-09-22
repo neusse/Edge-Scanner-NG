@@ -1,6 +1,6 @@
 # Edge Scanner NG architecture
 
-This documentation set explains how Edge Scanner acquires market data, updates
+This documentation set explains how Edge Scanner NG acquires market data, updates
 per-symbol state, evaluates setups, publishes accepted alerts, and serves the
 local dashboard and other alert consumers.
 
@@ -20,7 +20,7 @@ collects the same diagrams as a browsable report.
 
 ## Architectural summary
 
-Edge Scanner is a local-first, single-process application. `scripts/run_live.py`
+Edge Scanner NG is a local-first, single-process application. `scripts/run_live.py`
 loads the universe and historical caches, creates one selected `DataFeed`, seeds
 scanner state, starts the FastAPI server, and then enters the provider's blocking
 minute-bar subscription.
@@ -33,7 +33,7 @@ archives accepted alerts and fans them out to matching WebSocket subscribers.
 
 FastAPI serves both the React dashboard APIs and the unified alert feed on
 localhost port 7777. The dashboard and external local consumers observe the same
-accepted-alert stream. Edge Scanner does not place orders: any trading program
+accepted-alert stream. Edge Scanner NG does not place orders: any trading program
 must independently own idempotency, account state, risk limits, sizing, order
 validation, and execution authorization.
 
