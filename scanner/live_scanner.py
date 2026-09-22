@@ -56,6 +56,11 @@ class LiveScanner:
         self._sector_symbols = sorted(set(self._sector_map.values()) - {"SPY"})
 
         self._states: dict[str, SymbolState] = {}
+        self._spy_daily_history = pd.DataFrame()
+        self._symbol_daily_history: dict[str, pd.DataFrame] = {}
+        self._sector_daily_history: dict[str, pd.DataFrame] = {}
+        self._bars_5m_history: dict[str, pd.DataFrame] = {}
+        self._bars_5m_session_limits: dict[str, int] = {}
         # Multi-timeframe candle rings, one per symbol. Owned here rather than
         # by CustomEvaluator because the universe conditions read them too, and
         # they must be available whether or not custom setups are attached. The
@@ -68,6 +73,7 @@ class LiveScanner:
         self._spy_state: Optional[SymbolState] = None
         self._latest_spy_bar: Optional[dict] = None
         self._latest_sector_bars: dict[str, dict] = {}
+        self._sector_session_bars: dict[str, dict] = {}
         self._regime: MarketRegime = MarketRegime.NEUTRAL
 
         # System setups from an optional engine plugin (attach_system). Every
@@ -145,6 +151,26 @@ class LiveScanner:
             sector_daily:   {etf_symbol: daily_df} for sector ETFs (optional)
             bars_5m:        {symbol: 5m_df} for RVOL profile (optional)
         """
+        self._spy_daily_history = spy_daily.copy()
+        self._symbol_daily_history = {
+            symbol: frame.copy() for symbol, frame in symbol_daily.items()
+        }
+        self._sector_daily_history = {
+            symbol: frame.copy() for symbol, frame in (sector_daily or {}).items()
+        }
+        self._bars_5m_history = {
+            symbol: frame.copy() for symbol, frame in (bars_5m or {}).items()
+        }
+        self._bars_5m_session_limits = {}
+        for symbol, frame in self._bars_5m_history.items():
+            if frame.empty:
+                continue
+            index = pd.DatetimeIndex(frame.index)
+            if index.tz is None:
+                index = index.tz_localize("UTC")
+            self._bars_5m_session_limits[symbol] = len(
+                set(index.tz_convert("America/New_York").date)
+            )
         # SPY gets its own SymbolState for intraday VWAP / regime tracking
         self._spy_state = SymbolState.from_history("SPY", spy_daily, spy_daily)
         log.debug("SPY state built")
@@ -410,12 +436,156 @@ class LiveScanner:
             return False
         if day == prev:
             return True
-        log.warning("New session %s (was %s): intraday state reset. Daily context "
-                    "(prior close, ADV, volume profile) is from the last warmup; "
-                    "restart to refresh it.", day, prev)
+        self._finalize_daily_context(prev)
+        log.info("New session %s (was %s): daily context finalized and intraday state reset",
+                 day, prev)
         self.reset_session()
         self._session_day = day
+        if getattr(self, "_profiles", None) is not None:
+            fundamentals = {
+                symbol: value
+                for symbol in self._states
+                if (value := self._fundamentals_for(symbol)) is not None
+            }
+            self._profiles.resolve_members(self._states, fundamentals)
         return True
+
+    @staticmethod
+    def _append_completed_session(frame: pd.DataFrame, day: str,
+                                  state: SymbolState) -> pd.DataFrame:
+        if (state.session_open is None or state.high_of_day is None
+                or state.low_of_day is None or state._last_close is None):
+            return frame
+        row = pd.DataFrame(
+            {
+                "open": [float(state.session_open)],
+                "high": [float(state.high_of_day)],
+                "low": [float(state.low_of_day)],
+                "close": [float(state._last_close)],
+                "volume": [float(state.session_volume)],
+            },
+            index=pd.DatetimeIndex([pd.Timestamp(day, tz="UTC")]),
+        )
+        combined = pd.concat([frame, row]).sort_index()
+        combined = combined[~combined.index.duplicated(keep="last")]
+        return combined.tail(max(1, len(frame)))
+
+    @staticmethod
+    def _append_completed_5m(frame: Optional[pd.DataFrame],
+                             state: SymbolState,
+                             session_limit: Optional[int] = None) -> pd.DataFrame:
+        bars = list(state._stock_5m)
+        if state._partial_stock_5m is not None:
+            bars.append(state._partial_stock_5m)
+        if not bars:
+            return frame.copy() if frame is not None else pd.DataFrame()
+        completed = pd.DataFrame(bars)
+        completed["timestamp"] = pd.to_datetime(completed["timestamp"], utc=True)
+        completed = completed.set_index("timestamp").sort_index()
+        completed = completed[["open", "high", "low", "close", "volume"]]
+        if frame is None or frame.empty:
+            return completed
+        combined = pd.concat([frame, completed]).sort_index()
+        combined = combined[~combined.index.duplicated(keep="last")]
+        if session_limit:
+            et_days = pd.DatetimeIndex(combined.index).tz_convert("America/New_York").date
+            keep_days = set(sorted(set(et_days))[-session_limit:])
+            combined = combined[[day in keep_days for day in et_days]]
+        return combined
+
+    @staticmethod
+    def _append_reference_session(frame: pd.DataFrame, day: str,
+                                  completed: dict) -> pd.DataFrame:
+        row = pd.DataFrame(
+            {key: [float(completed[key])]
+             for key in ("open", "high", "low", "close", "volume")},
+            index=pd.DatetimeIndex([pd.Timestamp(day, tz="UTC")]),
+        )
+        combined = pd.concat([frame, row]).sort_index()
+        combined = combined[~combined.index.duplicated(keep="last")]
+        return combined.tail(max(1, len(frame)))
+
+    def _update_sector_session(self, symbol: str, bar: dict) -> None:
+        ts = pd.Timestamp(bar["timestamp"])
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        et = ts.tz_convert("America/New_York")
+        minute = et.hour * 60 + et.minute
+        if not 9 * 60 + 30 <= minute < 16 * 60:
+            return
+        current = self._sector_session_bars.get(symbol)
+        if current is None:
+            self._sector_session_bars[symbol] = {
+                "open": float(bar["open"]),
+                "high": float(bar["high"]),
+                "low": float(bar["low"]),
+                "close": float(bar["close"]),
+                "volume": float(bar["volume"]),
+            }
+            return
+        current["high"] = max(current["high"], float(bar["high"]))
+        current["low"] = min(current["low"], float(bar["low"]))
+        current["close"] = float(bar["close"])
+        current["volume"] += float(bar["volume"])
+
+    def _finalize_daily_context(self, day: str) -> None:
+        """Fold the completed live session into the same daily inputs as warmup."""
+        if not hasattr(self, "_states") or not self._states:
+            return
+
+        if self._spy_state is not None and not self._spy_daily_history.empty:
+            self._spy_daily_history = self._append_completed_session(
+                self._spy_daily_history, day, self._spy_state)
+
+        old_states = self._states
+        for symbol, state in old_states.items():
+            history = self._symbol_daily_history.get(symbol)
+            if history is None or history.empty:
+                continue
+            self._symbol_daily_history[symbol] = self._append_completed_session(
+                history, day, state)
+            self._bars_5m_history[symbol] = self._append_completed_5m(
+                self._bars_5m_history.get(symbol), state,
+                self._bars_5m_session_limits.get(symbol))
+
+        for symbol, completed in self._sector_session_bars.items():
+            history = self._sector_daily_history.get(symbol)
+            if history is None or history.empty:
+                continue
+            self._sector_daily_history[symbol] = self._append_reference_session(
+                history, day, completed)
+
+        if self._spy_daily_history.empty:
+            return
+        self._spy_state = SymbolState.from_history(
+            "SPY", self._spy_daily_history, self._spy_daily_history)
+
+        rebuilt: dict[str, SymbolState] = {}
+        for symbol, history in self._symbol_daily_history.items():
+            if history.empty:
+                continue
+            sector_symbol = self._sector_map.get(symbol)
+            sector_history = self._sector_daily_history.get(sector_symbol)
+            bars_5m = self._bars_5m_history.get(symbol)
+            state = SymbolState.from_history(
+                symbol,
+                history,
+                self._spy_daily_history,
+                sector_daily=sector_history,
+                bars_5m_history=bars_5m,
+            )
+            if (bars_5m is None or bars_5m.empty) and symbol in old_states:
+                state.volume_profile = old_states[symbol].volume_profile.copy()
+            rebuilt[symbol] = state
+
+            series = self.series(symbol)
+            series.seed_daily(history)
+            # The refreshed daily frame already contains `day`; prevent the
+            # first new-session bar from appending the same extremes again.
+            series.session_date = None
+
+        self._states = rebuilt
+        log.info("Daily context finalized for %d/%d symbols", len(rebuilt), len(self.symbols))
 
     # ── Bar routing ───────────────────────────────────────────────────────────
 
@@ -448,6 +618,7 @@ class LiveScanner:
         # below and may be evaluated as a normal symbol too.
         if symbol in self._sector_symbols:
             self._latest_sector_bars[symbol] = bar
+            self._update_sector_session(symbol, bar)
 
         state = self._states.get(symbol)
         if state is None:
@@ -600,6 +771,7 @@ class LiveScanner:
             self._spy_state._reset_intraday()
         self._latest_spy_bar = None
         self._latest_sector_bars.clear()
+        self._sector_session_bars.clear()
         self._regime = MarketRegime.NEUTRAL
         self.sink.clear()
         if self._system_evaluator is not None:
