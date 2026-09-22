@@ -110,6 +110,31 @@ def test_session_rollover_resets_once_memory_but_replay_can_prime_it():
     assert "event" not in series.mem
 
 
+@pytest.mark.parametrize("trigger", [t for t in CATALOG if t.source == "native"], ids=lambda t: t.id)
+def test_first_live_bar_after_replay_preserves_trigger_memory_until_next_date(trigger, tmp_path, monkeypatch):
+    from scanner.custom_setups import CustomEvaluator, CustomSetupStore
+    from scanner.trigger_catalog import Fire, _IMPL
+
+    option = trigger.default_options[0] if trigger.default_options else ""
+    store = CustomSetupStore(tmp_path / "setups", defaults=tmp_path / "none.json")
+    store.save({"id": "replay", "name": "Replay", "enabled": True,
+                "direction": "all", "sessions": ["rth"],
+                "triggers": [{"id": trigger.id, "options": [option] if option else []}]})
+    ev = CustomEvaluator(store)
+    monkeypatch.setitem(_IMPL, trigger.id,
+                        lambda ctx, opt, params: Fire("long", 1, "first") if ctx.once("replay-contract") else None)
+    state = SimpleNamespace(symbol="X", prior_close=100.0)
+    replay = {"symbol": "X", "timestamp": "2026-09-15T10:00:00-04:00",
+              "open": 100, "high": 101, "low": 99, "close": 100, "volume": 1}
+    ev.series("X").on_bar(replay, 600, DAY, None)
+    ev.prime_bar(state, replay, "rth")
+    live = {**replay, "timestamp": "2026-09-15T10:01:00-04:00"}
+    assert ev.on_bar(state, live) == []
+    ev.reset()
+    next_day = {**replay, "timestamp": "2026-09-16T10:00:00-04:00"}
+    assert len(ev.on_bar(state, next_day)) == 1
+
+
 def test_overnight_rollover_does_not_report_yesterdays_last_candle_as_new():
     series = SymbolSeries("X")
     green = {"open": 100, "high": 102, "low": 99, "close": 101, "volume": 100}
@@ -185,6 +210,17 @@ def test_extended_hod_includes_premarket_but_rth_hod_does_not():
     fire = evaluate("hod_ext", ctx, "high", {})
     assert fire is not None and fire.direction == "long" and fire.value == 102
     assert evaluate("hod", ctx, "high", {}) is None
+
+
+def test_vwap_v_does_not_borrow_yesterdays_approach_candles():
+    older = []
+    for i, close in enumerate([101.2, 101.0, 100.8, 100.6, 100.5]):
+        item = candle(close, close + .05, close - .05, close, i)
+        item["key"] = ("2026-09-14", "rth", i)
+        older.append(item)
+    touch = candle(100.1, 100.7, 99.95, 100.6, 5)
+    ctx = context(older + [touch])
+    assert evaluate("vwap_v", ctx, "support", {}) is None
 
 
 def candle(open_, high, low, close, index):
