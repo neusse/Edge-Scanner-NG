@@ -328,6 +328,10 @@ You compose setups yourself in the dashboard from three parts:
   relative volume above 1.5, price above VWAP).
 - **A universe filter**: which symbols the setup watches.
 
+The [native trigger contract matrix](docs/TRIGGER_CONTRACTS.md) lists every alert's session,
+event lifetime, boundary, and re-arm rule. Setup Check exposes each configured trigger's
+active lifetime alongside its latest level and note.
+
 The General tab separates **Signals to detect** from **Report alert as**. Most setups should leave
 the report direction on `Detected signal direction`. A position-management setup can override it:
 for example, detect only a bearish price cross below EMA9 but report the alert as `Long`, so it is
