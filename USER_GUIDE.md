@@ -216,11 +216,30 @@ while dragging to turn off snapping.
 | **Scanner** | The live alert stream. Each window has its own filters: setups, direction, minimum score and symbols. Column picker, row tint, and a sound or text-to-speech per window |
 | **Chart** | Intraday and daily candles with extended hours, VWAP, EMAs, daily SMAs, prior-day and premarket levels |
 | **Rankings** | Ranked lists: RVOL leaders, gainers and losers (from the close or the open), 5-minute movers, premarket gainers, losers and volume, and a new high / low of day stream |
+| **Screener** | Yahoo Finance presets or custom price, change, volume and market-cap filters. Results are discovery candidates that can be saved to watchlists |
 | **News** | Market-wide news, or news for the linked symbol |
-| **Stock Info** | Live per-symbol state plus fundamentals |
+| **Stock Info** | Live per-symbol state plus company fundamentals. The Schwab feed adds the full Instruments fundamental record, grouped into valuation, profitability, growth, financial health, dividends and trading statistics |
 | **Watchlist** | Editable symbol lists with live columns |
 | **Clock** | Eastern time, session phase, market regime, SPY and feed health |
 | **Setup check** | For one symbol, what every setup did over the last few minutes and which condition passed or failed. Use it to answer "why did (or didn't) this alert fire?" |
+
+### Screener, watchlists and the scanner universe
+
+The Screener finds candidates without adding them to the live Schwab stream. Choose a Yahoo preset or
+custom filters, press **Refresh**, select the rows you want (or leave all rows unselected to use every
+result), then choose **Save to watchlist**. A save can create a new watchlist, merge into one, or replace
+one. Watchlists keep a name, description and capture source.
+
+Open a Watchlist's settings and choose **Use this watchlist on next restart** to make exactly that list
+the scanner universe. The running scanner is not changed. On its next start it loads the selected list
+and refuses to start if the list is missing, empty or too large; it never silently truncates it. Schwab's
+300 chart-stream limit also has to hold SPY and the sector ETFs, so the dashboard allows at most 288
+watchlist symbols. The exact startup message shows watchlist, support and total stream counts.
+
+Watchlists can also be imported from or exported to CSV/text in the Watchlist window. The first CSV
+column is treated as the symbol (an optional `symbol` header is accepted). For manual maintenance while
+the scanner is stopped, edit `data/watchlists.json`; `data/universe_selection.json` contains only the id
+of the one selected list.
 
 ### Linking windows
 
@@ -277,6 +296,22 @@ You compose setups yourself in the dashboard from three parts:
 - **Parameters**: conditions that must hold when the trigger fires (for example gap of at least 2%,
   relative volume above 1.5, price above VWAP).
 - **A universe filter**: which symbols the setup watches.
+
+ADX is available as a trend-strength parameter. It uses completed candles and measures strength, not
+direction, so pair it with an EMA stack or another directional parameter. A period of 14 needs 28
+completed candles before it is available; until then the condition fails closed.
+
+Daily ATR extension measures live price from the prior daily EMA8 in ATR(14) units. Sector relative
+strength compares the stock with its mapped sector ETF over twelve completed 5-minute candles. The
+sector ETFs share the scanner's existing market-data connection; no second stream is opened.
+
+Directional high-RVOL ORB setups can use three opening-specific parameters. **Opening 5-min candle
+direction** requires a long breakout to agree with a bullish 09:30-09:35 candle, or a short breakdown
+to agree with a bearish one; a doji blocks both. **Opening 5-min relative volume** compares that
+candle's volume with the average volume in the same slot from loaded history. **Opening-volume
+universe rank** ranks those ratios across the loaded universe, where rank 1 is highest. The rank fails
+closed until its configured universe-coverage percentage is available, so an incomplete first batch of
+bars cannot falsely qualify as the top group.
 
 Custom setup ids start with `cs_`.
 
@@ -430,6 +465,7 @@ Everything the scanner writes lives under `data/` (gitignored).
 | `data/universe/profiles/` | Universe filters |
 | `data/layouts/` | Dashboard screens |
 | `data/watchlists.json` | Watchlists |
+| `data/universe_selection.json` | The one watchlist selected as the scanner universe for the next start |
 
 Alert files older than 5 days are deleted at startup (change with `--keep-days`). Copy them elsewhere if
 you want a longer history.
@@ -568,7 +604,9 @@ pass rate next to each setting shows how restrictive it is today. Changes apply 
 machine. Use a smaller universe CSV (see `build_universe.py` in section 7).
 
 **The Stock Info window has no fundamentals.** They load in the background after warmup and can take a few
-minutes. They are skipped when you run with `--no-fundamentals`.
+minutes. They are skipped when you run with `--no-fundamentals`. With `DATA_PROVIDER=schwab`, the scanner
+loads Schwab Instruments fundamentals in batched requests and uses Yahoo Finance for company profile fields
+such as sector, industry, website, summary and earnings date. Other feeds use Yahoo Finance alone.
 
 ---
 

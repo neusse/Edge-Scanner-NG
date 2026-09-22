@@ -252,6 +252,37 @@ def test_check_returns_a_gatecheck_the_alert_payload_already_understands():
     assert got.name == "rvol" and got.passed is True
 
 
+def test_opening_direction_must_agree_with_the_candidate_trade():
+    bullish = _state(opening_candle_direction=1.0)
+    cond = C.normalize_condition({"id": "opening_direction_m5", "option": "trade"})
+    assert C.check(cond, C.ConditionCtx(state=bullish, direction="long")).passed is True
+    assert C.check(cond, C.ConditionCtx(state=bullish, direction="short")).passed is False
+    doji = _state(opening_candle_direction=0.0)
+    assert C.check(cond, C.ConditionCtx(state=doji, direction="long")).passed is False
+
+
+def test_opening_rvol_and_rank_conditions_fail_closed_until_rank_is_ready():
+    state = _state(opening_rvol_m5=2.5, opening_rvol_rank=7.0,
+                   opening_rvol_coverage=0.79)
+    rvol = C.normalize_condition({"id": "opening_rvol_m5", "value": 1.0})
+    rank = C.normalize_condition({"id": "opening_rvol_rank", "value": 20,
+                                  "params": {"min_coverage": 80}})
+    assert C.check(rvol, C.ConditionCtx(state=state)).passed is True
+    blocked = C.check(rank, C.ConditionCtx(state=state))
+    assert blocked.passed is False and blocked.reason == "unavailable"
+    state.opening_rvol_coverage = 0.8
+    ready = C.check(rank, C.ConditionCtx(state=state))
+    assert ready.passed is True and ready.value == 7.0
+
+
+def test_opening_rank_uses_lower_is_better_semantics():
+    cond = C.normalize_condition({"id": "opening_rvol_rank", "value": 20})
+    top = _state(opening_rvol_rank=20.0, opening_rvol_coverage=1.0)
+    outside = _state(opening_rvol_rank=21.0, opening_rvol_coverage=1.0)
+    assert C.check(cond, C.ConditionCtx(state=top)).passed is True
+    assert C.check(cond, C.ConditionCtx(state=outside)).passed is False
+
+
 def test_describe_reads_like_a_plain_scanner_filter():
     assert C.describe(C.normalize_condition(
         {"id": "rel_vol", "option": "2", "value": 200})) == "Relative N-min volume (2 Min) >= 200%"
@@ -543,6 +574,59 @@ def test_held_above_ema_counts_each_candle_against_its_own_ema():
     falling = _day_candles([(100 + i, 50) for i in range(10)] + [(95, 50), (94, 50), (93, 50)])
     ctx2 = C.ConditionCtx(state=SimpleNamespace(symbol="X"), series=falling, direction="long")
     assert C.check(cond, ctx2).value == 0.0
+
+
+def _series_with_5m_closes(closes):
+    s = SymbolSeries("X")
+    for i, close in enumerate(closes):
+        s.candles[5].append({
+            "key": ("2026-09-15", "rth", i),
+            "open": close - 0.25,
+            "high": close + 0.5,
+            "low": close - 0.5,
+            "close": close,
+            "volume": 1000.0,
+            "vwap": 100.0,
+            "et_min": 570 + i * 5,
+            "session": "rth",
+        })
+    return s
+
+
+def test_adx_condition_passes_a_strong_trend_and_exposes_its_parameters():
+    s = _series_with_5m_closes([100.0 + i for i in range(40)])
+    ctx = C.ConditionCtx(state=SimpleNamespace(symbol="X"), series=s)
+    cond = C.normalize_condition({"id": "adx", "value": 30, "params": {"period": 14, "tf": 5}})
+    got = C.check(cond, ctx)
+    assert got.passed is True and got.value == pytest.approx(100.0)
+    assert C.describe(cond) == "ADX >= 30 on 5 min, period 14"
+
+
+def test_adx_condition_fails_closed_until_the_full_wilder_warmup():
+    s = _series_with_5m_closes([100.0 + i for i in range(27)])
+    ctx = C.ConditionCtx(state=SimpleNamespace(symbol="X"), series=s)
+    got = C.check(C.normalize_condition({"id": "adx"}), ctx)
+    assert got.passed is False and got.reason == "unavailable"
+
+
+def test_daily_atr_extension_is_signed_by_side_and_trade_direction():
+    state = SimpleNamespace(symbol="X", _last_close=106.0, prior_close=100.0,
+                            ema_8_d1=100.0, atr_14_d1=2.0)
+    long_ctx = C.ConditionCtx(state=state, bar={"close": 106.0}, direction="long")
+    short_ctx = C.ConditionCtx(state=state, bar={"close": 106.0}, direction="short")
+    base = {"id": "atr_extension_d1", "op": "gte", "value": 2.5}
+    assert _val(dict(base, option="trade"), long_ctx).value == 3.0
+    assert _val(dict(base, option="trade"), short_ctx).value == -3.0
+    assert _val(dict(base, option="above"), short_ctx).value == 3.0
+    assert C.describe(C.normalize_condition(dict(base, option="above"))) == \
+        "Daily ATR extension (Above EMA8) >= 2.5 x ATR"
+
+
+def test_intraday_sector_rrs_is_signed_by_trade_direction():
+    cond = {"id": "rrs_sector_m5", "op": "gte", "value": 1.0}
+    assert _val(cond, _ctx("long", rrs_sector_m5=1.5)).passed
+    assert not _val(cond, _ctx("short", rrs_sector_m5=1.5)).passed
+    assert _val(cond, _ctx("short", rrs_sector_m5=-1.5)).passed
 
 
 def test_vwap_hold_margin_rejects_a_stock_parked_on_vwap():

@@ -116,6 +116,62 @@ def test_warmup_prior_close_is_last_bar():
     assert scanner._states["AAPL"].prior_close == pytest.approx(expected_close)
 
 
+def test_opening_rvol_rank_is_cross_sectional_and_tracks_coverage():
+    scanner, _, _ = _make_scanner(symbols=["AAA", "BBB"])
+    _warmup(scanner, symbols=["AAA", "BBB"])
+    scanner._states["AAA"].volume_profile = pd.Series({0: 500.0})
+    scanner._states["BBB"].volume_profile = pd.Series({0: 500.0})
+
+    for symbol, volume in (("AAA", 200.0), ("BBB", 100.0)):
+        for minute in range(30, 36):
+            assert scanner.seed_session_bar(
+                _bar(symbol, 100.0 + minute / 100.0, f"2024-01-02 09:{minute:02d}")
+                | {"volume": volume})
+
+    aaa, bbb = scanner._states["AAA"], scanner._states["BBB"]
+    assert aaa.opening_rvol_m5 == pytest.approx(2.0)
+    assert bbb.opening_rvol_m5 == pytest.approx(1.0)
+    assert aaa.opening_rvol_rank == 1.0
+    assert bbb.opening_rvol_rank == 2.0
+    assert aaa.opening_rvol_population == 2
+    assert aaa.opening_rvol_coverage == pytest.approx(1.0)
+
+
+def test_opening_rvol_ties_share_the_same_rank():
+    scanner, _, _ = _make_scanner(symbols=["AAA", "BBB"])
+    _warmup(scanner, symbols=["AAA", "BBB"])
+    for state in scanner._states.values():
+        state.volume_profile = pd.Series({0: 500.0})
+        state._stock_5m.append({"slot": 570, "open": 100.0, "close": 101.0,
+                                "high": 101.0, "low": 100.0, "volume": 500.0})
+    scanner._refresh_opening_rvol_ranks()
+    assert scanner._states["AAA"].opening_rvol_rank == 1.0
+    assert scanner._states["BBB"].opening_rvol_rank == 1.0
+
+
+def test_seed_session_bar_keeps_state_and_custom_trigger_series_in_sync():
+    """A mid-session restart must not make a lower live bar look like a new HOD."""
+    from scanner.trigger_catalog import EvalCtx, evaluate
+
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    state = scanner._states["AAPL"]
+    state._reset_intraday()
+
+    seeded = _bar("AAPL", 105.0, "2024-01-02 09:30")
+    scanner.seed_session_bar(seeded)
+
+    assert state.high_of_day == seeded["high"]
+    assert scanner.series("AAPL").day_high == seeded["high"]
+
+    lower = _bar("AAPL", 104.0, "2024-01-02 09:31")
+    state.on_bar(lower)
+    session = scanner._advance_series(state, lower)
+    ctx = EvalCtx(state=state, series=scanner.series("AAPL"), bar=lower,
+                  et_min=9 * 60 + 31, session=session, external=set())
+    assert evaluate("hod", ctx, "high", {}) is None
+
+
 # ── SPY bar routing ───────────────────────────────────────────────────────────
 
 def test_spy_bar_updates_latest_spy_bar():
@@ -273,6 +329,36 @@ def test_connect_includes_spy_and_all_symbols():
     assert "SPY"  in subscribed
     assert "AAPL" in subscribed
     assert "MSFT" in subscribed
+
+
+def test_connect_adds_sector_etfs_to_the_same_subscription():
+    feed = _FakeFeed()
+    scanner = LiveScanner(["AAPL", "MSFT"], feed, sector_map={"AAPL": "XLK", "MSFT": "XLK"})
+    spy = _daily_bars(60, base=450.0)
+    stocks = {"AAPL": _daily_bars(60), "MSFT": _daily_bars(60, base=200.0)}
+    scanner.warmup(spy, stocks, sector_daily={"XLK": _daily_bars(60, base=150.0)})
+    scanner.connect()
+    assert feed._callback == scanner._on_bar
+    assert feed._callback is not None
+    # One call, one stream, with the shared reference symbol included once.
+    subscribed = ["SPY"] + scanner.ranked_symbols() + ["XLK"]
+    captured = []
+    feed.subscribe_minute_bars = lambda symbols, callback: captured.extend(symbols)
+    scanner.connect()
+    assert captured == subscribed
+
+
+def test_sector_bar_is_routed_as_reference_data_not_an_alert_symbol():
+    feed = _FakeFeed()
+    scanner = LiveScanner(["AAPL"], feed, sector_map={"AAPL": "XLK"})
+    spy = _daily_bars(60, base=450.0)
+    scanner.warmup(spy, {"AAPL": _daily_bars(60)},
+                   sector_daily={"XLK": _daily_bars(60, base=150.0)})
+    sector_bar = _bar("XLK", 150.0, "2024-01-02 10:00")
+    scanner._on_bar(sector_bar)
+    scanner._on_bar(_bar("AAPL", 100.0, "2024-01-02 10:00"))
+    assert scanner._latest_sector_bars["XLK"] is sector_bar
+    assert scanner._states["AAPL"]._partial_sector_5m is not None
 
 
 def test_connect_subscribes_most_liquid_first():

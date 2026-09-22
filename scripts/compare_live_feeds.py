@@ -143,8 +143,12 @@ def _load_alerts(root: Path, day: str) -> list[dict]:
     return out
 
 
-def compare_alerts(a_dir: Path, b_dir: Path, day: str, rank: dict[str, int]) -> tuple[list[str], dict]:
+def compare_alerts(a_dir: Path, b_dir: Path, day: str, rank: dict[str, int],
+                   since: pd.Timestamp | None = None) -> tuple[list[str], dict]:
     A, B = _load_alerts(a_dir, day), _load_alerts(b_dir, day)
+    if since is not None:
+        A = [x for x in A if x["_t"] >= since]
+        B = [x for x in B if x["_t"] >= since]
     key = lambda x: (x.get("symbol"), x.get("setup") or x.get("trigger"), x.get("direction"))
     by_b: dict[tuple, list[dict]] = defaultdict(list)
     for x in B:
@@ -202,6 +206,8 @@ def main() -> int:
     ap.add_argument("--b-alerts", default="data/alerts_schwab")
     ap.add_argument("--universe", default="data/universe_all.csv")
     ap.add_argument("--per-tier", type=int, default=40, help="symbols sampled per tier for the state check")
+    ap.add_argument("--since", default="", help="only compare alerts from this ET time today, HH:MM "
+                                                "(use it after a restart: a scanner that was down has no alerts to match)")
     args = ap.parse_args()
 
     now = datetime.now(_ET)
@@ -221,7 +227,12 @@ def main() -> int:
     s_lines, s_sum = compare_state(args.a, args.b, ranked, args.per_tier)
     out += s_lines
     out += ["## Alerts", ""]
-    a_lines, a_sum = compare_alerts(Path(args.a_alerts), Path(args.b_alerts), day, rank)
+    since = None
+    if args.since:
+        since = pd.Timestamp(f"{day} {args.since}", tz=_ET).tz_convert("UTC")
+        out.append(f"Alerts from {args.since} ET only.")
+        out.append("")
+    a_lines, a_sum = compare_alerts(Path(args.a_alerts), Path(args.b_alerts), day, rank, since)
     out += a_lines
 
     dest = Path("data/feed_compare")

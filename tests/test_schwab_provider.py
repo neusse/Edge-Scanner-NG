@@ -29,7 +29,7 @@ def _candles(start: date, n: int):
 
 class _Client:
     def __init__(self, fail_first=0):
-        self.calls, self.fail_first = [], fail_first
+        self.calls, self.instrument_calls, self.fail_first = [], [], fail_first
 
     def price_history(self, symbol, **kw):
         self.calls.append(symbol)
@@ -41,6 +41,14 @@ class _Client:
 
     def quotes(self, symbols, fields):
         return _Resp(200, {s: {"quote": {"lastPrice": 20.0}} for s in symbols})
+
+    def instruments(self, symbols, projection):
+        self.instrument_calls.append((symbols, projection))
+        return _Resp(200, {"instruments": [
+            {"symbol": symbol, "description": f"{symbol} Corp", "assetType": "EQUITY",
+             "fundamental": {"marketCap": 1_000_000, "peRatio": 12.5}}
+            for symbol in symbols.split(",")
+        ]})
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +95,15 @@ def test_cache_is_reused_only_when_it_covers_the_requested_span(tmp_path):
 
 def test_snapshot_goes_through_the_limiter(tmp_path):
     assert _feed(tmp_path, _Client()).get_snapshot(["A", "B"])["B"]["price"] == 20.0
+
+
+def test_fundamentals_are_batched_and_preserve_full_instrument_rows(tmp_path):
+    client = _Client()
+    symbols = [f"S{i:03d}" for i in range(205)]
+    got = _feed(tmp_path, client).get_fundamentals(symbols)
+    assert len(client.instrument_calls) == 3
+    assert all(projection == "fundamental" for _, projection in client.instrument_calls)
+    assert got["S204"]["fundamental"]["peRatio"] == 12.5
 
 
 def _tokens_db(path, issued: datetime):

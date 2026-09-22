@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 import type { StockInfo, StockInfoConfig } from '../../types'
 import { api } from '../../lib/api'
 import { usePoll } from '../../lib/usePoll'
@@ -9,6 +9,60 @@ import { useFundamentals } from '../../lib/useFundamentals'
 
 const Pct = ({ v, d = 2 }: { v: number | null | undefined; d?: number }) =>
   v == null ? <>{DASH}</> : <span className={v > 0 ? 'up' : v < 0 ? 'down' : ''}>{fmtPct(v, d)}</span>
+
+type SchwabField = [key: string, label: string, format?: 'money' | 'volume' | 'percent' | 'price']
+const SCHWAB_GROUPS: [string, SchwabField[]][] = [
+  ['Schwab overview', [
+    ['marketCap', 'Market cap', 'money'], ['marketCapFloat', 'Float shares', 'volume'],
+    ['sharesOutstanding', 'Shares outstanding', 'volume'], ['beta', 'Beta'],
+    ['high52', '52-week high', 'price'], ['low52', '52-week low', 'price'],
+  ]],
+  ['Valuation', [
+    ['peRatio', 'P/E'], ['pegRatio', 'PEG'], ['pbRatio', 'Price / book'],
+    ['prRatio', 'Price / revenue'], ['pcfRatio', 'Price / cash flow'],
+    ['bookValuePerShare', 'Book value / share', 'price'], ['eps', 'EPS', 'price'],
+    ['epsTTM', 'EPS TTM', 'price'],
+  ]],
+  ['Profitability', [
+    ['grossMarginTTM', 'Gross margin TTM', 'percent'], ['grossMarginMRQ', 'Gross margin MRQ', 'percent'],
+    ['netProfitMarginTTM', 'Net margin TTM', 'percent'], ['netProfitMarginMRQ', 'Net margin MRQ', 'percent'],
+    ['operatingMarginTTM', 'Operating margin TTM', 'percent'], ['operatingMarginMRQ', 'Operating margin MRQ', 'percent'],
+    ['returnOnEquity', 'Return on equity', 'percent'], ['returnOnAssets', 'Return on assets', 'percent'],
+    ['returnOnInvestment', 'Return on investment', 'percent'],
+  ]],
+  ['Growth', [
+    ['epsChangePercentTTM', 'EPS change TTM', 'percent'], ['epsChangeYear', 'EPS change year', 'percent'],
+    ['epsChange', 'EPS change', 'percent'], ['revChangeYear', 'Revenue change year', 'percent'],
+    ['revChangeTTM', 'Revenue change TTM', 'percent'], ['revChangeIn', 'Revenue change', 'percent'],
+  ]],
+  ['Financial health', [
+    ['currentRatio', 'Current ratio'], ['quickRatio', 'Quick ratio'], ['interestCoverage', 'Interest coverage'],
+    ['totalDebtToCapital', 'Debt / capital', 'percent'], ['ltDebtToEquity', 'LT debt / equity', 'percent'],
+    ['totalDebtToEquity', 'Total debt / equity', 'percent'], ['fundLeverageFactor', 'Leverage factor'],
+  ]],
+  ['Dividends', [
+    ['dividendAmount', 'Dividend amount', 'price'], ['dividendYield', 'Dividend yield', 'percent'],
+    ['dividendFreq', 'Dividend frequency'], ['dividendPayAmount', 'Dividend pay amount', 'price'],
+    ['divGrowthRate3Year', 'Dividend growth 3y', 'percent'],
+  ]],
+  ['Trading statistics', [
+    ['avg1DayVolume', 'Average volume 1d', 'volume'], ['avg10DaysVolume', 'Average volume 10d', 'volume'],
+    ['avg3MonthVolume', 'Average volume 3m', 'volume'], ['dtnVolume', 'DTN volume', 'volume'],
+    ['vol1DayAvg', 'Volume average 1d', 'volume'], ['vol10DayAvg', 'Volume average 10d', 'volume'],
+    ['vol3MonthAvg', 'Volume average 3m', 'volume'], ['shortIntToFloat', 'Short interest / float', 'percent'],
+    ['shortIntDayToCover', 'Short days to cover'],
+  ]],
+]
+
+function fmtSchwab(value: string | number | null | undefined, format?: SchwabField[2]) {
+  if (value == null || value === '') return DASH
+  if (typeof value !== 'number') return String(value)
+  if (format === 'money') return fmtMoney(value)
+  if (format === 'volume') return fmtVol(value)
+  if (format === 'percent') return fmtPct(value, 2, false)
+  if (format === 'price') return fmtPrice(value)
+  return fmtNum(value, 2)
+}
 
 export function StockInfoWindow({ win }: { win: StockInfoConfig }) {
   const symbol = useLinkedSymbol(win, win.symbol)
@@ -52,8 +106,21 @@ export function StockInfoWindow({ win }: { win: StockInfoConfig }) {
             {row('Short % float', f?.short_pct_float == null ? DASH : fmtPct(f.short_pct_float * 100, 1, false))}
             {row('Short ratio', fmtNum(f?.short_ratio, 1))}
             {row('Next earnings', f?.next_earnings ? <span className={earn != null && earn <= 5 ? 'down' : ''} style={{ fontWeight: earn != null && earn <= 5 ? 700 : 400 }}>{fmtDate(f.next_earnings)}{earn != null ? ` (${earn}d)` : ''}</span> : DASH)}
+            {row('Source', f?.provider === 'schwab' ? 'Schwab Instruments + Yahoo profile' : 'Yahoo Finance')}
             {f && !f.ok && !f.pending ? row('Note', <span className="faint" style={{ fontSize: 10 }}>{f.error ?? 'unavailable'}</span>) : null}
           </div>
+          {f?.schwab_fundamentals && SCHWAB_GROUPS.map(([title, fields]) => {
+            const visible = fields.filter(([key]) => Object.prototype.hasOwnProperty.call(f.schwab_fundamentals, key))
+            if (!visible.length) return null
+            return <div key={title}>
+              <div className="kv-sec">{title}</div>
+              <div className="kv">
+                {visible.map(([key, label, format]) =>
+                  <Fragment key={key}>{row(label, fmtSchwab(f.schwab_fundamentals?.[key], format))}</Fragment>
+                )}
+              </div>
+            </div>
+          })}
           <div className="kv-sec">Price</div>
           <div className="kv">
             {row('Last', <b>{fmtPrice(s.price)}</b>)}

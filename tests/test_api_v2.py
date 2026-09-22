@@ -18,7 +18,7 @@ from scanner.api import AppState, create_app
 from scanner.api_v2 import clean, price_of, session_now
 from scanner.events import EventBuffer, make_hodlod_hook
 from scanner.fundamentals import FundamentalsCache
-from scanner.json_store import LayoutStore, WatchlistStore, normalize_symbols
+from scanner.json_store import LayoutStore, UniverseSelectionStore, WatchlistStore, normalize_symbols
 from scanner.news import NewsClient
 from scanner.state import SymbolState
 from scanner.toplists import ToplistEngine, build_rows
@@ -37,6 +37,13 @@ class FakeScanner:
         self._spy_state = spy
         self._regime = FakeRegime()
         self._sector_map = {s: "XLK" for s in states}
+
+
+class FakeYahooScreener:
+    def run(self, request: dict) -> dict:
+        return {"mode": request.get("mode", "preset"), "preset": request.get("preset"),
+                "label": "Fake results", "rows": [{"symbol": "AAPL", "price": 200.0}],
+                "count": 1, "total": 1, "limit": request.get("limit", 100), "cached": False}
 
 
 def _states() -> dict[str, SymbolState]:
@@ -67,6 +74,7 @@ def client(tmp_path: Path):
     from scanner.api_v2 import mount_v2_static, register_v2_routes
     app = FastAPI()
     register_v2_routes(app, app_state, layouts_dir=tmp_path / "layouts", watchlists_path=tmp_path / "wl.json",
+                       universe_selection_path=tmp_path / "selection.json", yahoo_screener=FakeYahooScreener(),
                        fundamentals_path=tmp_path / "fund.json", news_client=fake_news,
                        universe_csv=tmp_path / "nope.csv", sector_csv=tmp_path / "nope2.csv")
     mount_v2_static(app)
@@ -140,6 +148,19 @@ def test_watchlist_store_upsert_and_normalize(tmp_path: Path):
     assert [w["name"] for w in ws.load_all()] == ["B"]
     assert ws.delete("w1") and ws.load_all() == []
     assert normalize_symbols(["a", 1, "A"]) == ["A"]
+
+
+def test_watchlist_metadata_and_universe_selection_roundtrip(tmp_path: Path):
+    ws = WatchlistStore(tmp_path / "wl.json")
+    rec = ws.save({"id": "movers", "name": "Morning movers", "description": "Liquid names only",
+                   "symbols": ["AAPL"], "source": "yahoo_screener", "sourceLabel": "Day gainers",
+                   "capturedAt": "2026-09-21T10:00:00Z"})
+    assert rec["description"] == "Liquid names only"
+    assert rec["source"] == "yahoo_screener" and rec["sourceLabel"] == "Day gainers"
+    selection = UniverseSelectionStore(tmp_path / "selection.json")
+    assert selection.load() is None
+    assert selection.save("movers") == "movers" and selection.load() == "movers"
+    assert selection.save(None) is None and selection.load() is None
 
 
 # ── events ───────────────────────────────────────────────────────────────────
@@ -329,6 +350,37 @@ def test_v2_watchlists_crud(client: TestClient):
     assert client.delete("/api/v2/watchlists/w1").json()["ok"] is True
 
 
+def test_v2_screener_and_explicit_universe_selection(client: TestClient):
+    assert any(p["id"] == "day_gainers" for p in client.get("/api/v2/screener/yahoo/catalog").json()["presets"])
+    screened = client.post("/api/v2/screener/yahoo", json={"mode": "preset", "preset": "day_gainers", "limit": 25}).json()
+    assert screened["rows"][0]["symbol"] == "AAPL"
+
+    symbols = [f"S{i}" for i in range(288)]
+    assert client.put("/api/v2/watchlists/core", json={"id": "core", "name": "Core", "symbols": symbols}).status_code == 200
+    selected = client.put("/api/v2/universe/selection", json={"watchlist_id": "core"}).json()
+    assert selected["ok"] and selected["watchlist_id"] == "core" and selected["applies_on_restart"]
+    too_many = [f"X{i}" for i in range(289)]
+    assert client.put("/api/v2/watchlists/core", json={"id": "core", "name": "Core", "symbols": too_many}).status_code == 400
+    assert client.delete("/api/v2/watchlists/core").json()["ok"]
+    assert client.get("/api/v2/universe/selection").json()["watchlist_id"] is None
+
+
 def test_v2_static_mount_without_build(client: TestClient):
     r = client.get("/v2/anything")
     assert r.status_code in (200, 503)   # 503 until dashboard-v2/dist exists; 200 once built
+
+
+def test_v2_static_serves_javascript_as_module(tmp_path):
+    from fastapi import FastAPI
+    from scanner.api_v2 import mount_v2_static
+
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<html></html>", encoding="utf-8")
+    (dist / "assets" / "app.js").write_text("export {};", encoding="utf-8")
+    app = FastAPI()
+    mount_v2_static(app, dist)
+
+    response = TestClient(app).get("/v2/assets/app.js")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/javascript")

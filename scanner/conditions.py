@@ -50,6 +50,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from scanner.gates import GateCheck
+from scanner.indicators.adx import adx as compute_adx
 from scanner.trigger_catalog import (
     LEVELS,
     TF_LABEL,
@@ -298,6 +299,56 @@ _add(ConditionDef(
     "reads about 16% higher than a market-average method.",
     "dynamic", lambda c, o, p: _f(getattr(c.state, "rvol", None)),
     unit="x", default_op="gte", default_value=1.0, min=0, max=50, step=0.05,
+))
+
+
+def _resolve_opening_direction(c: ConditionCtx, opt: str, p: dict) -> Optional[float]:
+    direction = _f(getattr(c.state, "opening_candle_direction", None))
+    if direction is None:
+        return None
+    return direction * c.dir_sign if opt == "trade" else direction
+
+
+_add(ConditionDef(
+    "opening_direction_m5", "Opening 5-min candle direction", "Price & levels",
+    "Direction of the completed 09:30-09:35 ET candle. In the trade direction, "
+    "1 means a bullish opening candle for a long or a bearish opening candle "
+    "for a short; a doji is 0 and does not pass.",
+    "dynamic", _resolve_opening_direction,
+    unit="", ops=("gte", "lte"), default_op="gte", default_value=1.0,
+    min=-1, max=1, step=1,
+    options=(OptionDef("trade", "In the trade direction"), OptionDef("raw", "Signed")),
+    option_label="Sign", default_option="trade",
+))
+
+
+_add(ConditionDef(
+    "opening_rvol_m5", "Opening 5-min relative volume", "Volume",
+    "Volume in the completed 09:30-09:35 ET candle divided by the average "
+    "volume in that same five-minute slot from the loaded history.",
+    "dynamic", lambda c, o, p: _f(getattr(c.state, "opening_rvol_m5", None)),
+    unit="x", default_op="gte", default_value=1.0, min=0, max=100, step=0.1,
+))
+
+
+def _resolve_opening_rvol_rank(c: ConditionCtx, opt: str, p: dict) -> Optional[float]:
+    coverage = _f(getattr(c.state, "opening_rvol_coverage", None))
+    if coverage is None or coverage * 100.0 < float(p.get("min_coverage", 80)):
+        return None
+    return _f(getattr(c.state, "opening_rvol_rank", None))
+
+
+_add(ConditionDef(
+    "opening_rvol_rank", "Opening-volume universe rank", "Volume",
+    "Rank by first-five-minute relative volume across the loaded scanner "
+    "universe: 1 is highest. It blocks until the configured share of symbols "
+    "has a completed opening-volume value, preventing a partial early ranking.",
+    "dynamic", _resolve_opening_rvol_rank,
+    unit="rank", ops=("lte", "gte"), default_op="lte", default_value=20.0,
+    min=1, max=1000, step=1,
+    params=(ParamDef("min_coverage", "Universe data ready", 80, 1, 100, 1, "%",
+                     "Minimum share of loaded symbols with an opening-volume value."),),
+    phrase="after {min_coverage}% universe coverage",
 ))
 
 
@@ -662,6 +713,43 @@ _add(ConditionDef(
 ))
 
 
+def _resolve_adx(c: ConditionCtx, opt: str, p: dict) -> Optional[float]:
+    """Latest Wilder ADX from completed candles on the chosen timeframe."""
+    if c.series is None:
+        return None
+    tf, period = int(p.get("tf", 5)), int(p.get("period", 14))
+    if tf not in c.series.candles or period < 2:
+        return None
+    cs = list(c.series.candles[tf])
+    if len(cs) < 2 * period:
+        return None
+    try:
+        import pandas as pd
+        value = compute_adx(
+            pd.Series([x["high"] for x in cs], dtype=float),
+            pd.Series([x["low"] for x in cs], dtype=float),
+            pd.Series([x["close"] for x in cs], dtype=float),
+            period,
+        ).iloc[-1]
+    except (KeyError, TypeError, ValueError):
+        return None
+    return _f(value)
+
+
+_add(ConditionDef(
+    "adx", "ADX", "Trend strength",
+    "Wilder Average Directional Index on completed candles. ADX measures trend "
+    "strength, not direction; pair it with an EMA stack or another directional "
+    "condition. It fails closed until two full periods of candles are available.",
+    "dynamic", _resolve_adx,
+    unit="", default_op="gte", default_value=30.0, min=0, max=100, step=1,
+    phrase="on {tf} min, period {period}",
+    params=(ParamDef("period", "Period", 14, 2, 50, 1, "candles"),
+            ParamDef("tf", "Timeframe", 5, 1, 60, 1, "min",
+                     choices=(1.0, 2.0, 5.0, 15.0, 30.0, 60.0))),
+))
+
+
 _add(ConditionDef(
     "gap_pct", "Gap from prior close", "Price & levels",
     "Session open against prior close. A strong noise filter: longs with "
@@ -671,6 +759,39 @@ _add(ConditionDef(
     unit="%", default_op="gte", default_value=1.0, min=-100, max=100, step=0.1,
     options=(OptionDef("abs", "Absolute"), OptionDef("signed", "Signed")),
     option_label="Sign", default_option="abs",
+))
+
+
+def _resolve_atr_extension_d1(c: ConditionCtx, opt: str, p: dict) -> Optional[float]:
+    """Live price's distance from the prior daily EMA8 in ATR(14) units."""
+    px = c.price
+    ema8 = _f(getattr(c.state, "ema_8_d1", None))
+    atr = _f(getattr(c.state, "atr_14_d1", None))
+    if px is None or ema8 is None or atr is None or atr <= 0:
+        return None
+    value = (px - ema8) / atr
+    if opt == "abs":
+        return abs(value)
+    if opt == "below":
+        return -value
+    if opt == "trade":
+        return value * c.dir_sign
+    return value
+
+
+_add(ConditionDef(
+    "atr_extension_d1", "Daily ATR extension", "Volatility",
+    "Live price's distance from the prior daily EMA8, measured in Wilder "
+    "ATR(14). Positive 'Above' values identify upside extension; positive "
+    "'Below' values identify downside extension. 'In the trade direction' "
+    "signs the value for long and short setups.",
+    "dynamic", _resolve_atr_extension_d1,
+    unit="x ATR", ops=("gt", "gte", "lt", "lte"), default_op="gte",
+    default_value=2.0, min=-20, max=20, step=0.1,
+    options=(OptionDef("trade", "In the trade direction"),
+             OptionDef("above", "Above EMA8"), OptionDef("below", "Below EMA8"),
+             OptionDef("abs", "Either side")),
+    option_label="Side", default_option="trade",
 ))
 
 _add(ConditionDef(
@@ -749,6 +870,27 @@ _add(ConditionDef(
     "Needs about 12 five-minute bars before it resolves; until then it passes, "
     "as the gate does.",
     "dynamic", _resolve_rrs, warming_up=_rrs_warming_up,
+    unit="", ops=("gt", "gte", "lt", "lte"), default_op="gt", default_value=0.0,
+    min=-100, max=100, step=0.1,
+    options=(OptionDef("trade", "In the trade direction"), OptionDef("raw", "Signed")),
+    option_label="Sign", default_option="trade",
+))
+
+
+def _resolve_rrs_sector_m5(c: ConditionCtx, opt: str, p: dict) -> Optional[float]:
+    v = _f(getattr(c.state, "rrs_sector_m5", None))
+    if v is None:
+        return None
+    return v * c.dir_sign if opt == "trade" else v
+
+
+_add(ConditionDef(
+    "rrs_sector_m5", "Relative strength vs sector ETF", "Price & levels",
+    "Intraday 5-minute real relative strength against the stock's mapped "
+    "sector ETF over the last hour. 'In the trade direction' signs it, so a "
+    "positive value means sector-relative strength on a long and weakness on "
+    "a short. Uses sector bars carried on the scanner's existing shared stream.",
+    "dynamic", _resolve_rrs_sector_m5, warming_up=_rrs_warming_up,
     unit="", ops=("gt", "gte", "lt", "lte"), default_op="gt", default_value=0.0,
     min=-100, max=100, step=0.1,
     options=(OptionDef("trade", "In the trade direction"), OptionDef("raw", "Signed")),

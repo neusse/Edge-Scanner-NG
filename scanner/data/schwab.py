@@ -478,6 +478,32 @@ class SchwabFeed(DataFeed):
                 log.warning("Schwab quotes batch failed: %s", exc)
         return result
 
+    def get_fundamentals(self, symbols: list[str]) -> dict[str, dict]:
+        """Return Schwab instrument rows keyed by symbol.
+
+        The Instruments endpoint accepts multiple comma-separated symbols.  Keep
+        these requests batched: the dashboard prefetch can cover a whole
+        universe without turning one symbol into one REST call.
+        """
+        result: dict[str, dict] = {}
+        batch_size = 100
+        clean_symbols = [str(symbol).upper().strip() for symbol in symbols if str(symbol).strip()]
+        for i in range(0, len(clean_symbols), batch_size):
+            batch = clean_symbols[i : i + batch_size]
+            try:
+                resp = self._request(
+                    lambda b=batch: self._client.instruments(",".join(b), projection="fundamental")
+                )
+                for row in (resp.json() or {}).get("instruments", []) or []:
+                    if not isinstance(row, dict):
+                        continue
+                    sym = str(row.get("symbol") or "").upper().strip()
+                    if sym:
+                        result[sym] = row
+            except Exception as exc:
+                log.warning("Schwab fundamentals batch failed for %d symbols: %s", len(batch), exc)
+        return result
+
     # ── Streaming ─────────────────────────────────────────────────────────────
 
     @staticmethod

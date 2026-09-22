@@ -42,9 +42,10 @@ no login because nothing is exposed to the network.
   gitignored.
 - **Goes out, to your own accounts:** market data requests to Alpaca or Charles Schwab, signed with
   your keys. They see the symbols you scan, as any market-data client would.
-- **Goes out, unauthenticated:** company fundamentals from Yahoo Finance, and per-symbol news
-  headlines from Yahoo Finance and Nasdaq RSS. Those services see the symbol being requested and
-  your IP. Turn the news ones off with `NEWS_RSS_SOURCES=` in `.env`.
+- **Goes out, unauthenticated:** company profile fields from Yahoo Finance, and per-symbol news
+  headlines from Yahoo Finance and Nasdaq RSS. When Schwab is the data provider, richer company
+  fundamentals come from the authenticated Schwab Instruments endpoint. Those services see the
+  symbol being requested and your IP. Turn the news ones off with `NEWS_RSS_SOURCES=` in `.env`.
 - **Never collected:** no analytics, no crash reports, no usage data. The project has no server.
 
 ## What's inside
@@ -56,7 +57,9 @@ no login because nothing is exposed to the network.
 - **Universe filters.** Named screens over price, liquidity, ATR, float, sector, relative volume and
   more, deciding which stocks a setup may alert on.
 - **Dashboard windows.** Alert tables, charts, rankings (gainers, losers, most active, pre-market
-  lists, new highs and lows), news, stock info, watchlists, Setup Check and a market clock.
+  lists, new highs and lows), a Yahoo-backed candidate screener, news, stock info, watchlists, Setup
+  Check and a market clock. Screener results can be saved as named, described watchlists; one list can
+  be selected as the scanner universe for the next start.
 - **One data connection.** Everything runs in one process on one market-data websocket: Alpaca by
   default, or Charles Schwab, which is free with a brokerage account. Providers sit behind one
   `DataFeed` interface, so anything that can stream 1-minute bars and answer for history can be

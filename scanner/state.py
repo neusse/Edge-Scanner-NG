@@ -5,7 +5,7 @@ Lifecycle:
        state = SymbolState.from_history(symbol, daily_bars, spy_daily,
                                         sector_daily, bars_5m_history)
   2. Each 1-min bar arrives (from the streaming loop):
-       state.on_bar(bar, spy_bar)
+       state.on_bar(bar, spy_bar, sector_bar)
   3. Gate / trigger evaluation (Steps 4–5) reads indicator properties.
 """
 from __future__ import annotations
@@ -27,6 +27,7 @@ from scanner.indicators.vwap import vwap_update
 log = logging.getLogger(__name__)
 
 _ATR_D1_LEN = D1_LENGTH   # Wilder ATR length for daily (same as RRS window)
+_ATR_EXTENSION_D1_LEN = 14
 _EMA8_D1_SPAN = 8
 _SMA_LENS = (50, 100, 200)
 _EMA_SHORT = 3             # intraday short EMA (for 3/9 crossover trigger)
@@ -70,6 +71,7 @@ class SymbolState:
         daily_lows_60d: pd.Series,
         prior_open: Optional[float] = None,
         adv20: Optional[float] = None,
+        atr_14_d1: Optional[float] = None,
     ) -> None:
         # Daily state (set at warmup, does not change during session)
         self.symbol = symbol
@@ -80,6 +82,7 @@ class SymbolState:
         self.prior_open = prior_open
         self.adv20 = adv20
         self.atr_d1 = atr_d1
+        self.atr_14_d1 = atr_14_d1
         self.rrs_d1 = rrs_d1
         self.rrs_sector_d1 = rrs_sector_d1
         self.sma_50 = sma_50
@@ -120,6 +123,10 @@ class SymbolState:
         # ATR (daily, Wilder)
         atr_series = wilder_atr(stock["high"], stock["low"], stock["close"], _ATR_D1_LEN)
         atr_val = _scalar(atr_series.iloc[-1])
+        atr14_series = wilder_atr(
+            stock["high"], stock["low"], stock["close"], _ATR_EXTENSION_D1_LEN)
+        atr14_last = atr14_series.iloc[-1]
+        atr14_val = None if pd.isna(atr14_last) else _scalar(atr14_last)
 
         # SMAs
         sma_vals: dict[int, Optional[float]] = {}
@@ -169,6 +176,7 @@ class SymbolState:
             prior_open=prior_open_val,
             adv20=adv20_val,
             atr_d1=atr_val,
+            atr_14_d1=atr14_val,
             rrs_d1=rrs_val,
             rrs_sector_d1=rrs_sector,
             sma_50=sma_vals[50],
@@ -228,10 +236,21 @@ class SymbolState:
         # 5-min bar aggregation (ring-buffer — a full session of lookback)
         self._stock_5m: deque[dict] = deque(maxlen=_M5_DEQUE_SIZE)
         self._spy_5m: deque[dict] = deque(maxlen=_M5_DEQUE_SIZE)
+        self._sector_5m: deque[dict] = deque(maxlen=_M5_DEQUE_SIZE)
         self._partial_stock_5m: Optional[dict] = None
         self._partial_spy_5m: Optional[dict] = None
+        self._partial_sector_5m: Optional[dict] = None
+        self._last_sector_bar_timestamp = None
 
         self._rrs_m5: Optional[float] = None
+        self._rrs_sector_m5: Optional[float] = None
+        # Cross-sectional opening-volume rank is assigned by LiveScanner once
+        # the first RTH five-minute candle is complete across enough symbols.
+        # The per-symbol opening candle/RVOL values themselves are derived from
+        # this state's completed candle and historical volume profile below.
+        self._opening_rvol_rank: Optional[float] = None
+        self._opening_rvol_population: int = 0
+        self._opening_rvol_coverage: float = 0.0
         # Last few per-bar M5 RRS values, oldest first, for the rrs_slope condition.
         # Free: they are the tail of the series _maybe_update_rrs_m5 already computes.
         self._rrs_m5_tail: list[float] = []
@@ -246,12 +265,14 @@ class SymbolState:
 
     # ── Live bar update ───────────────────────────────────────────────────────
 
-    def on_bar(self, bar: dict, spy_bar: Optional[dict] = None) -> None:
+    def on_bar(self, bar: dict, spy_bar: Optional[dict] = None,
+               sector_bar: Optional[dict] = None) -> None:
         """Update all intraday state on a new 1-min bar close.
 
         Args:
             bar:     1-min bar dict (keys: timestamp, open, high, low, close, volume)
             spy_bar: matching SPY 1-min bar (optional; required for RRS_M5)
+            sector_bar: latest matching sector-ETF bar (optional; sector RRS)
         """
         high = bar["high"]
         low = bar["low"]
@@ -316,7 +337,8 @@ class SymbolState:
         self._partial_stock_5m = _aggregate_into_slot(
             self._partial_stock_5m, self._stock_5m, bar, slot
         )
-        if len(self._stock_5m) > prev_5m_len:
+        stock_5m_completed = len(self._stock_5m) > prev_5m_len
+        if stock_5m_completed:
             close_5m = self._stock_5m[-1]["close"]
             self._prev_ema_3 = self._ema_3
             self._prev_ema_9 = self._ema_9
@@ -337,11 +359,23 @@ class SymbolState:
             completed_bar["ema21_snap"] = self._ema_21
 
         if spy_bar is not None:
+            prev_spy_5m_len = len(self._spy_5m)
             spy_slot = _five_min_slot(spy_bar["timestamp"])
             self._partial_spy_5m = _aggregate_into_slot(
                 self._partial_spy_5m, self._spy_5m, spy_bar, spy_slot
             )
-            self._maybe_update_rrs_m5()
+            if stock_5m_completed or len(self._spy_5m) > prev_spy_5m_len:
+                self._maybe_update_rrs_m5()
+
+        if sector_bar is not None and sector_bar.get("timestamp") != self._last_sector_bar_timestamp:
+            prev_sector_5m_len = len(self._sector_5m)
+            sector_slot = _five_min_slot(sector_bar["timestamp"])
+            self._partial_sector_5m = _aggregate_into_slot(
+                self._partial_sector_5m, self._sector_5m, sector_bar, sector_slot
+            )
+            self._last_sector_bar_timestamp = sector_bar.get("timestamp")
+            if stock_5m_completed or len(self._sector_5m) > prev_sector_5m_len:
+                self._maybe_update_rrs_sector_m5()
 
         # Capture 10AM bar open (first 1-min bar at 10:00 ET)
         if self._open_10am is None:
@@ -369,6 +403,18 @@ class SymbolState:
         self._rrs_m5 = None if pd.isna(val) else float(val)
         self._rrs_m5_tail = [float(v) for v in series.iloc[-(_RRS_TAIL + 1):] if not pd.isna(v)]
 
+    def _maybe_update_rrs_sector_m5(self) -> None:
+        """Recompute raw 5-minute RRS against the symbol's sector ETF."""
+        if len(self._stock_5m) < _M5_RRS_MIN_BARS or len(self._sector_5m) < _M5_RRS_MIN_BARS:
+            return
+        s_df = _deque_to_df(self._stock_5m)
+        b_df = _deque_to_df(self._sector_5m)
+        series = compute_rrs_raw(s_df, b_df, M5_LENGTH)
+        if series.empty:
+            return
+        val = series.iloc[-1]
+        self._rrs_sector_m5 = None if pd.isna(val) else float(val)
+
     # ── Read-only properties ──────────────────────────────────────────────────
 
     @property
@@ -392,6 +438,55 @@ class SymbolState:
         # here compared today's volume against a shorter baseline interval.
         mins = _et_minutes(self._last_1m[-1]["timestamp"]) - _RTH_OPEN_MIN + 1
         return compute_rvol(self.volume_profile, self._cum_vol, mins)
+
+    def _opening_5m(self) -> Optional[dict]:
+        """Today's completed 09:30-09:35 ET candle, if available."""
+        for candle in self._stock_5m:
+            if candle.get("slot") == _RTH_OPEN_MIN:
+                return candle
+        return None
+
+    @property
+    def opening_candle_direction(self) -> Optional[float]:
+        """+1 bullish, -1 bearish, 0 doji for the first RTH five-minute bar."""
+        candle = self._opening_5m()
+        if candle is None:
+            return None
+        opened = float(candle["open"])
+        closed = float(candle["close"])
+        return 1.0 if closed > opened else -1.0 if closed < opened else 0.0
+
+    @property
+    def opening_rvol_m5(self) -> Optional[float]:
+        """First-five-minute volume divided by its historical slot average."""
+        candle = self._opening_5m()
+        if candle is None or self.volume_profile.empty or 0 not in self.volume_profile.index:
+            return None
+        expected = float(self.volume_profile.loc[0])
+        if expected <= 0:
+            return None
+        return float(candle["volume"]) / expected
+
+    def set_opening_rvol_rank(self, rank: Optional[float], population: int,
+                              universe_size: int) -> None:
+        """Store the scanner-wide opening-RVOL rank and its data coverage."""
+        self._opening_rvol_rank = rank
+        self._opening_rvol_population = int(population)
+        self._opening_rvol_coverage = (
+            float(population) / float(universe_size) if universe_size > 0 else 0.0)
+
+    @property
+    def opening_rvol_rank(self) -> Optional[float]:
+        """Cross-sectional rank where 1 is the highest opening RVOL."""
+        return self._opening_rvol_rank
+
+    @property
+    def opening_rvol_population(self) -> int:
+        return self._opening_rvol_population
+
+    @property
+    def opening_rvol_coverage(self) -> float:
+        return self._opening_rvol_coverage
 
     @property
     def session_volume(self) -> float:
@@ -438,6 +533,10 @@ class SymbolState:
     @property
     def rrs_m5(self) -> Optional[float]:
         return self._rrs_m5
+
+    @property
+    def rrs_sector_m5(self) -> Optional[float]:
+        return self._rrs_sector_m5
 
     @property
     def rrs_m5_tail(self) -> list[float]:

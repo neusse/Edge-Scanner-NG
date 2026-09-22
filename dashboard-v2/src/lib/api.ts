@@ -2,6 +2,7 @@ import type {
   Bar, CheckResult, ClockInfo, CustomSetup, SetupsPayload, EventsPayload, Fundamentals, NewsPayload, PremarketPayload, Screen,
   SettingsPayload, SettingsStats, SnapshotPayload, StockInfo, ToplistPayload, UniverseMetaPayload, Watchlist,
   MembersResult, ProfilesPayload, UniverseProfile, ToplistsPayload, SetupCheckPayload,
+  YahooScreenerCatalog, YahooScreenerPayload, ScreenerConfig, UniverseSelectionPayload,
 } from '../types'
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
@@ -54,6 +55,19 @@ export const api = {
     return json<NewsPayload>(`/api/v2/news?${q}`)
   },
   universeMeta: () => json<UniverseMetaPayload>('/api/v2/universe/meta'),
+  screener: {
+    catalog: () => json<YahooScreenerCatalog>('/api/v2/screener/yahoo/catalog'),
+    run: (config: ScreenerConfig) => post<YahooScreenerPayload>('/api/v2/screener/yahoo', {
+      mode: config.mode, preset: config.preset, filters: config.filters,
+      sort_field: config.sortField, sort_asc: config.sortAsc,
+      limit: config.limit, include_otc: config.includeOtc,
+    }),
+  },
+  universeSelection: {
+    get: () => json<UniverseSelectionPayload>('/api/v2/universe/selection'),
+    set: (watchlistId: string | null) =>
+      put<UniverseSelectionPayload>('/api/v2/universe/selection', { watchlist_id: watchlistId }),
+  },
   layouts: {
     list: () => json<{ screens: Screen[] }>('/api/v2/layouts').then(d => d.screens ?? []),
     save: (s: Screen) => put<{ ok: boolean }>(`/api/v2/layouts/${encodeURIComponent(s.id)}`, s),

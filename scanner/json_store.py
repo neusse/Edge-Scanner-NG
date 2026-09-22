@@ -121,13 +121,28 @@ class WatchlistStore:
         return [w for w in (lst or []) if isinstance(w, dict)]
 
     def save(self, wl: dict) -> dict:
-        """Upsert by id. Symbols are uppercased and deduped (order preserved)."""
+        """Upsert by id. Symbols are uppercased and deduped (order preserved).
+
+        Optional descriptive and provenance fields stay deliberately small so
+        the file remains comfortable to inspect and edit by hand.
+        """
         wid = sanitize_id(wl.get("id") if isinstance(wl, dict) else None)
         if wid is None:
             raise ValueError("watchlist['id'] must match [A-Za-z0-9_-]{1,64}")
-        rec = dict(wl)
-        rec["id"] = wid
-        rec["symbols"] = normalize_symbols(rec.get("symbols"))
+        prev = next((w for w in self.load_all() if w.get("id") == wid), None)
+        rec = {
+            "id": wid,
+            "name": str(wl.get("name") or wid).strip()[:80] or wid,
+            "description": str(wl.get("description") or "").strip()[:800],
+            "symbols": normalize_symbols(wl.get("symbols")),
+            "createdAt": str(wl.get("createdAt") or (prev or {}).get("createdAt") or wl.get("updatedAt") or ""),
+            "updatedAt": str(wl.get("updatedAt") or ""),
+        }
+        for key, limit in (("source", 32), ("sourceLabel", 120), ("sourceProfileId", 64),
+                           ("sourceProfileHash", 40), ("capturedAt", 64)):
+            value = str(wl.get(key) or "").strip()[:limit]
+            if value:
+                rec[key] = value
         with self._lock:
             lists = self.load_all()
             for i, w in enumerate(lists):
@@ -150,6 +165,37 @@ class WatchlistStore:
                 return False
             self._store.write({"watchlists": remaining})
         return True
+
+
+class UniverseSelectionStore:
+    """The one watchlist chosen for the next scanner start.
+
+    Kept separate from watchlists so a list remains an ordinary reusable list
+    and assigning it is an explicit, auditable action.
+    """
+
+    def __init__(self, path: Path = Path("data/universe_selection.json")) -> None:
+        self._store = AtomicJsonStore(path)
+
+    @property
+    def path(self) -> Path:
+        return self._store.path
+
+    def load(self) -> Optional[str]:
+        doc = self._store.read()
+        if not isinstance(doc, dict):
+            return None
+        return sanitize_id(doc.get("watchlist_id"))
+
+    def save(self, watchlist_id: Optional[str]) -> Optional[str]:
+        if watchlist_id in (None, ""):
+            self._store.write({"watchlist_id": None})
+            return None
+        wid = sanitize_id(watchlist_id)
+        if wid is None:
+            raise ValueError("watchlist_id must match [A-Za-z0-9_-]{1,64}")
+        self._store.write({"watchlist_id": wid})
+        return wid
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

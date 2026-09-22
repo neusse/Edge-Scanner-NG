@@ -32,7 +32,7 @@ from scanner.custom_setups import CustomEvaluator, CustomSetupStore, SetupError,
 from scanner.events import EventBuffer
 from scanner.recent_activity import build_setup_check
 from scanner.fundamentals import FundamentalsCache, get_cache as get_fundamentals_cache
-from scanner.json_store import LayoutStore, WatchlistStore, sanitize_id
+from scanner.json_store import LayoutStore, UniverseSelectionStore, WatchlistStore, sanitize_id
 from scanner.conditions import catalog_json as conditions_catalog_json
 from scanner.news import NewsClient
 from scanner.profiles import (
@@ -48,6 +48,8 @@ from scanner.toplists import (
     assignment_key, member_predicate,
 )
 from scanner.trigger_catalog import catalog_json
+from scanner.universe_selection import stream_symbols
+from scanner.yahoo_screener import PRESETS as YAHOO_PRESETS, YahooScreener, YahooScreenerError
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +58,9 @@ _REPO = Path(__file__).parent.parent
 _V2_DIST = _REPO / "dashboard-v2" / "dist"
 _UNIVERSE_CSV = Path("data/universe.csv")
 _SECTOR_CSV = Path("data/sector_map.csv")
+_SCHWAB_CHART_CAP = 300
+_SUPPORT_RESERVE = 12                  # SPY + the eleven sector ETFs
+_SAFE_WATCHLIST_CAP = _SCHWAB_CHART_CAP - _SUPPORT_RESERVE
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -145,6 +150,10 @@ def state_to_snapshot(state) -> dict:
         "chg_pct": _pct(price, _g(state, "prior_close")),
         "rth_chg_pct": _g(state, "rth_chg_pct"),
         "rvol": _g(state, "rvol"),
+        "openingDirection5m": _g(state, "opening_candle_direction"),
+        "openingRvol5m": _g(state, "opening_rvol_m5"),
+        "openingRvolRank": _g(state, "opening_rvol_rank"),
+        "openingRvolCoverage": _g(state, "opening_rvol_coverage"),
         "vwap": _g(state, "vwap"),
         "dist_vwap_pct": _g(state, "dist_vwap_pct"),
         "hod": _g(state, "high_of_day"),
@@ -177,6 +186,10 @@ def state_to_info(state, meta: Optional[dict], sector_etf: Optional[str]) -> dic
         "vwap": _g(state, "vwap"),
         "dist_vwap_pct": _g(state, "dist_vwap_pct"),
         "rvol": _g(state, "rvol"),
+        "openingDirection5m": _g(state, "opening_candle_direction"),
+        "openingRvol5m": _g(state, "opening_rvol_m5"),
+        "openingRvolRank": _g(state, "opening_rvol_rank"),
+        "openingRvolCoverage": _g(state, "opening_rvol_coverage"),
         "adv20": _g(state, "adv20"),
         "mom_15m_pct": _g(state, "mom_15m_pct"),
         "day_range_pos": _g(state, "day_range_pos"),
@@ -189,8 +202,10 @@ def state_to_info(state, meta: Optional[dict], sector_etf: Optional[str]) -> dic
         "sma200": _g(state, "sma_200"),
         "ema8_d1": _g(state, "ema_8_d1"),
         "atr_d1": _g(state, "atr_d1"),
+        "atr14_d1": _g(state, "atr_14_d1"),
         "rrs_d1": _g(state, "rrs_d1"),
         "rrs_sector_d1": _g(state, "rrs_sector_d1"),
+        "rrs_sector_m5": _g(state, "rrs_sector_m5"),
         "chart_quality": _g(state, "chart_quality"),
         "sector_etf": sector_etf,
         "universe": meta,
@@ -235,15 +250,22 @@ class V2State:
         *,
         layouts_dir: Optional[Path] = None,
         watchlists_path: Optional[Path] = None,
+        universe_selection_path: Optional[Path] = None,
         fundamentals_path: Optional[Path] = None,
         news_client: Optional[NewsClient] = None,
         universe_csv: Path = _UNIVERSE_CSV,
         sector_csv: Path = _SECTOR_CSV,
         setups_dir: Optional[Path] = None,
+        yahoo_screener: Optional[YahooScreener] = None,
     ) -> None:
         self.app_state = app_state
         self.layouts = LayoutStore(layouts_dir) if layouts_dir else LayoutStore()
         self.watchlists = WatchlistStore(watchlists_path) if watchlists_path else WatchlistStore()
+        self.universe_selection = (
+            UniverseSelectionStore(universe_selection_path)
+            if universe_selection_path else UniverseSelectionStore()
+        )
+        self.yahoo_screener = yahoo_screener or YahooScreener()
         self.fundamentals: FundamentalsCache = (
             get_fundamentals_cache(fundamentals_path) if fundamentals_path else get_fundamentals_cache()
         )
@@ -794,6 +816,76 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
                                      symbol, minutes)
         return JSONResponse(clean(await asyncio.to_thread(build)))
 
+    # ── candidate screener / selected universe ───────────────────────────────
+
+    def universe_selection_payload() -> dict:
+        selected_id = v2.universe_selection.load()
+        watchlists = v2.watchlists.load_all()
+        selected = next((w for w in watchlists if w.get("id") == selected_id), None)
+        states = getattr(scanner, "_states", {}) or {}
+        sector_symbols = set(getattr(scanner, "_sector_symbols", ()) or ())
+        if not sector_symbols:
+            sector_symbols = set((getattr(scanner, "_sector_map", {}) or {}).values())
+        sector_symbols.discard("SPY")
+        current_streams = stream_symbols(sorted(states), sorted(sector_symbols))
+        selected_symbols = list((selected or {}).get("symbols") or [])
+        selected_streams = stream_symbols(selected_symbols, sorted(sector_symbols)) if selected else []
+        return {
+            "watchlist_id": selected_id,
+            "watchlist_name": (selected or {}).get("name") if selected else None,
+            "watchlist_found": selected is not None or selected_id is None,
+            "selected_count": len(selected_symbols),
+            "selected_total": len(selected_streams),
+            "current_count": len(states),
+            "current_total": len(current_streams),
+            "support_count": max(0, len(current_streams) - len(states)),
+            "support_symbols": [s for s in current_streams if s not in states],
+            "cap": _SCHWAB_CHART_CAP,
+            "safe_watchlist_cap": _SAFE_WATCHLIST_CAP,
+            "applies_on_restart": True,
+            "applied": bool(selected and set(selected_symbols) == set(states)),
+        }
+
+    @app.get("/api/v2/screener/yahoo/catalog")
+    async def v2_yahoo_screener_catalog() -> JSONResponse:
+        return JSONResponse({"presets": [{"id": key, "label": label}
+                                          for key, label in YAHOO_PRESETS.items()]})
+
+    @app.post("/api/v2/screener/yahoo")
+    async def v2_yahoo_screener(body: dict = Body(...)) -> JSONResponse:
+        try:
+            result = await asyncio.to_thread(v2.yahoo_screener.run, body if isinstance(body, dict) else {})
+        except YahooScreenerError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return JSONResponse(clean(result))
+
+    @app.get("/api/v2/universe/selection")
+    async def v2_universe_selection() -> JSONResponse:
+        return JSONResponse(clean(universe_selection_payload()))
+
+    @app.put("/api/v2/universe/selection")
+    async def v2_universe_selection_put(body: dict = Body(...)) -> JSONResponse:
+        wid = body.get("watchlist_id") if isinstance(body, dict) else None
+        if wid in (None, ""):
+            v2.universe_selection.save(None)
+            return JSONResponse(clean({"ok": True, **universe_selection_payload()}))
+        sid = sanitize_id(wid)
+        if sid is None:
+            return JSONResponse({"error": "invalid watchlist id"}, status_code=400)
+        watchlist = next((w for w in v2.watchlists.load_all() if w.get("id") == sid), None)
+        if watchlist is None:
+            return JSONResponse({"error": "watchlist not found"}, status_code=404)
+        count = len(watchlist.get("symbols") or [])
+        if count == 0:
+            return JSONResponse({"error": "an empty watchlist cannot be the scanner universe"}, status_code=400)
+        if count > _SAFE_WATCHLIST_CAP:
+            return JSONResponse({
+                "error": f"watchlist has {count} symbols; the safe maximum is {_SAFE_WATCHLIST_CAP} "
+                         f"because {_SUPPORT_RESERVE} Schwab streams are reserved for SPY and sector ETFs"
+            }, status_code=400)
+        v2.universe_selection.save(sid)
+        return JSONResponse(clean({"ok": True, **universe_selection_payload()}))
+
     # ── watchlists ───────────────────────────────────────────────────────────
 
     @app.get("/api/v2/watchlists")
@@ -805,6 +897,11 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
         wid = sanitize_id(wl_id)
         if wid is None or wl.get("id") != wid:
             return JSONResponse({"error": "id mismatch or invalid id"}, status_code=400)
+        if v2.universe_selection.load() == wid and len(wl.get("symbols") or []) > _SAFE_WATCHLIST_CAP:
+            return JSONResponse({
+                "error": f"this is the selected scanner universe; it cannot exceed "
+                         f"{_SAFE_WATCHLIST_CAP} watchlist symbols"
+            }, status_code=400)
         try:
             rec = v2.watchlists.save(wl)
         except (ValueError, OSError) as exc:
@@ -813,7 +910,10 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
 
     @app.delete("/api/v2/watchlists/{wl_id}")
     async def v2_watchlist_delete(wl_id: str) -> JSONResponse:
-        return JSONResponse({"ok": v2.watchlists.delete(wl_id)})
+        ok = v2.watchlists.delete(wl_id)
+        if ok and v2.universe_selection.load() == sanitize_id(wl_id):
+            v2.universe_selection.save(None)
+        return JSONResponse({"ok": ok})
 
     return v2
 
@@ -839,7 +939,10 @@ def mount_v2_static(app: FastAPI, dist: Path = _V2_DIST) -> None:
         except AttributeError:      # py<3.9 (not our case) — be safe anyway
             inside = str(target).startswith(str(dist.resolve()))
         if path and inside and target.is_file():
-            return FileResponse(target)
+            # Windows commonly registers .js as text/plain. Browsers refuse to
+            # execute an ES module served with that MIME type, leaving V2 blank.
+            media_type = "text/javascript" if target.suffix.lower() in (".js", ".mjs") else None
+            return FileResponse(target, media_type=media_type)
         return FileResponse(index)
 
     @app.get("/v2")

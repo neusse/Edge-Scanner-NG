@@ -7,6 +7,7 @@ from scanner.indicators.ema_sma import ema, ema_update, sma
 from scanner.indicators.vwap import session_vwap, vwap_update
 from scanner.indicators.rvol import build_volume_profile, compute_rvol
 from scanner.indicators.chart_quality import chart_quality
+from scanner.indicators.adx import adx
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -158,6 +159,28 @@ def test_compute_rvol_double_volume():
 def test_compute_rvol_empty_profile():
     assert compute_rvol(pd.Series(dtype=float), 1_000.0, 30) is float("nan") or \
         pd.isna(compute_rvol(pd.Series(dtype=float), 1_000.0, 30))
+
+
+# ── ADX ────────────────────────────────────────────────────────────────
+
+def test_adx_reaches_100_for_a_one_way_trend():
+    idx = _daily_index(60)
+    close = pd.Series([100.0 + i for i in range(60)], index=idx)
+    out = adx(close + 0.5, close - 0.5, close, 14)
+    assert out.iloc[-1] == pytest.approx(100.0)
+
+
+def test_adx_waits_for_directional_movement_and_adx_warmup():
+    idx = _daily_index(27)
+    close = pd.Series([100.0 + i for i in range(27)], index=idx)
+    assert adx(close + 0.5, close - 0.5, close, 14).isna().all()
+
+
+def test_adx_stays_low_for_balanced_chop():
+    idx = _daily_index(80)
+    close = pd.Series([101.0 if i % 2 else 99.0 for i in range(80)], index=idx)
+    out = adx(close + 0.5, close - 0.5, close, 14)
+    assert out.iloc[-1] < 10.0
 
 
 # ── Chart quality ─────────────────────────────────────────────────────────────

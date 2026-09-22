@@ -81,3 +81,37 @@ def test_old_rate_limited_entries_without_the_flag_are_refetched(tmp_path):
     c.fetch_one("ACME")
     c._symbols["ACME"].update(ok=False, error="Too Many Requests. Rate limited. Try after a while.")
     assert c.get("ACME") is None
+
+
+def test_schwab_fundamentals_are_merged_and_kept_in_full(tmp_path):
+    calls = []
+
+    def fetch(symbols):
+        calls.append(list(symbols))
+        return {symbol: {
+            "symbol": symbol, "description": f"{symbol} from Schwab", "exchange": "NYSE",
+            "fundamental": {
+                "marketCap": 2_500_000_000, "marketCapFloat": 8_000_000,
+                "sharesOutstanding": 10_000_000, "shortIntToFloat": 7.5,
+                "shortIntDayToCover": 2.25, "peRatio": 18.4, "returnOnEquity": 21.0,
+            },
+        } for symbol in symbols}
+
+    c = fm.FundamentalsCache(tmp_path / "f.json", ticker_factory=lambda s: _Ticker(GOOD),
+                             batch_fetcher=fetch, provider_name="schwab")
+    c.prefetch_all(["AAA", "BBB"], workers=1)
+    assert calls == [["AAA", "BBB"]]
+    entry = c.get("AAA")
+    assert entry["provider"] == "schwab"
+    assert entry["market_cap"] == 2_500_000_000
+    assert entry["float_shares"] == 8_000_000
+    assert entry["short_pct_float"] == 0.075
+    assert entry["schwab_fundamentals"]["returnOnEquity"] == 21.0
+
+
+def test_configuring_schwab_invalidates_yahoo_only_cache_entry(tmp_path):
+    c = _cache(tmp_path, lambda s: _Ticker(GOOD))
+    c.fetch_one("ACME")
+    assert c.get("ACME") is not None
+    c.configure_provider(lambda symbols: {}, "schwab")
+    assert c.get("ACME") is None

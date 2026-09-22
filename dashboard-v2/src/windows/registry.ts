@@ -3,6 +3,7 @@ import type { FeedId, WindowConfig, WindowType } from '../types'
 import { ScannerWindow, ScannerSettings } from './scanner/ScannerWindow'
 import { ChartWindow, ChartSettings } from './chart/ChartWindow'
 import { ToplistWindow, ToplistSettings } from './toplist/ToplistWindow'
+import { ScreenerWindow, ScreenerSettings } from './screener/ScreenerWindow'
 import { TOPLIST_LABEL } from './defaults'
 import { NewsWindow, NewsSettings } from './news/NewsWindow'
 import { StockInfoWindow } from './stockinfo/StockInfoWindow'
@@ -41,6 +42,11 @@ export const WINDOW_REGISTRY: Record<WindowType, WindowDef> = {
     component: ToplistWindow as unknown as WindowDef['component'],
     settings: ToplistSettings as unknown as WindowDef['settings'],
     subtitle: w => ({ text: TOPLIST_LABEL[(w as { list: keyof typeof TOPLIST_LABEL }).list] }),
+  },
+  screener: {
+    component: ScreenerWindow as unknown as WindowDef['component'],
+    settings: ScreenerSettings as unknown as WindowDef['settings'],
+    subtitle: w => ({ text: (w as { mode: string }).mode === 'custom' ? 'custom' : 'Yahoo' }),
   },
   news: {
     component: NewsWindow as unknown as WindowDef['component'],

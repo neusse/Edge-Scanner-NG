@@ -53,6 +53,7 @@ class LiveScanner:
         self.feed = feed
         self.sink = sink if sink is not None else AlertSink()
         self._sector_map: dict[str, str] = sector_map or {}
+        self._sector_symbols = sorted(set(self._sector_map.values()) - {"SPY"})
 
         self._states: dict[str, SymbolState] = {}
         # Multi-timeframe candle rings, one per symbol. Owned here rather than
@@ -66,6 +67,7 @@ class LiveScanner:
         self._profiles = None
         self._spy_state: Optional[SymbolState] = None
         self._latest_spy_bar: Optional[dict] = None
+        self._latest_sector_bars: dict[str, dict] = {}
         self._regime: MarketRegime = MarketRegime.NEUTRAL
 
         # System setups from an optional engine plugin (attach_system). Every
@@ -335,6 +337,46 @@ class LiveScanner:
             float(vwap) if vwap is not None else None,
         )
 
+    def seed_session_bar(self, bar: dict, spy_bar: Optional[dict] = None,
+                         sector_bar: Optional[dict] = None) -> bool:
+        """Replay one session bar without evaluating setups or emitting alerts.
+
+        Mid-session startup must seed both SymbolState and the shared
+        SymbolSeries. If only SymbolState is seeded, custom HOD/LOD triggers
+        begin at the first live bar and mistake ordinary moves for day highs or
+        lows even though the alert context holds the correct session levels.
+        """
+        state = self._states.get(str(bar.get("symbol") or ""))
+        if state is None:
+            return False
+        before_opening_rvol = state.opening_rvol_m5
+        state.on_bar(bar, spy_bar, sector_bar)
+        if before_opening_rvol is None and state.opening_rvol_m5 is not None:
+            self._refresh_opening_rvol_ranks()
+        self._advance_series(state, bar)
+        return True
+
+    def _refresh_opening_rvol_ranks(self) -> None:
+        """Rank loaded symbols by first-five-minute RVOL, highest first.
+
+        Equal values share a competition rank. Coverage travels with the rank
+        so the condition can fail closed while the opening bars are incomplete.
+        """
+        values = {
+            symbol: value
+            for symbol, state in self._states.items()
+            if (value := state.opening_rvol_m5) is not None
+        }
+        population = len(values)
+        universe_size = len(self._states)
+        rank_for_value: dict[float, int] = {}
+        for rank, value in enumerate(sorted(values.values(), reverse=True), start=1):
+            rank_for_value.setdefault(value, rank)
+        for symbol, state in self._states.items():
+            value = values.get(symbol)
+            rank = float(rank_for_value[value]) if value is not None else None
+            state.set_opening_rvol_rank(rank, population, universe_size)
+
     def _roll_session_if_new_day(self, bar: dict) -> bool:
         """Reset intraday state when the first bar of a new ET date arrives.
 
@@ -395,6 +437,13 @@ class LiveScanner:
                       bar["close"], self._spy_state.vwap or 0, self._regime.value)
             return
 
+        # Sector ETFs are reference symbols on the same shared stream. Keep the
+        # latest bar for every mapped stock; do not create a second connection.
+        # If an ETF is also explicitly in the user's universe, it continues on
+        # below and may be evaluated as a normal symbol too.
+        if symbol in self._sector_symbols:
+            self._latest_sector_bars[symbol] = bar
+
         state = self._states.get(symbol)
         if state is None:
             return
@@ -406,7 +455,11 @@ class LiveScanner:
             _bar0 = perf_counter_ns()
             _t0 = _bar0
 
-        state.on_bar(bar, self._latest_spy_bar)
+        sector_bar = self._latest_sector_bars.get(self._sector_map.get(symbol, ""))
+        before_opening_rvol = state.opening_rvol_m5
+        state.on_bar(bar, self._latest_spy_bar, sector_bar)
+        if before_opening_rvol is None and state.opening_rvol_m5 is not None:
+            self._refresh_opening_rvol_ranks()
         if _t:
             _t1 = perf_counter_ns(); bar_timer.record("state", _t1 - _t0); _t0 = _t1
 
@@ -522,6 +575,7 @@ class LiveScanner:
         if not self._states:
             log.warning("connect() called before warmup — no symbols loaded")
         all_symbols = ["SPY"] + [sym for sym in self.ranked_symbols() if sym != "SPY"]
+        all_symbols += [sym for sym in getattr(self, "_sector_symbols", ()) if sym not in all_symbols]
         log.info("Connecting to live feed for %d symbols", len(all_symbols))
         self.feed.subscribe_minute_bars(all_symbols, self._on_bar)
 
@@ -540,6 +594,7 @@ class LiveScanner:
         if self._spy_state is not None:
             self._spy_state._reset_intraday()
         self._latest_spy_bar = None
+        self._latest_sector_bars.clear()
         self._regime = MarketRegime.NEUTRAL
         self.sink.clear()
         if self._system_evaluator is not None:

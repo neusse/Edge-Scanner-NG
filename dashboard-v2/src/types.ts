@@ -55,7 +55,7 @@ export type SortDir = 'asc' | 'desc'
 export type LinkColor = 'none' | 'red' | 'green' | 'blue' | 'yellow' | 'purple'
 export const LINK_COLORS: Exclude<LinkColor, 'none'>[] = ['red', 'green', 'blue', 'yellow', 'purple']
 
-export type WindowType = 'scanner' | 'chart' | 'toplist' | 'news' | 'stockinfo' | 'watchlist' | 'clock' | 'setupcheck'
+export type WindowType = 'scanner' | 'chart' | 'toplist' | 'screener' | 'news' | 'stockinfo' | 'watchlist' | 'clock' | 'setupcheck'
 /** alert producers on the unified feed */
 export type FeedId = 'system' | 'custom'
 export type ToneName = 'ping' | 'chime' | 'buzz' | 'off'
@@ -142,6 +142,26 @@ export interface ToplistConfig extends WindowBase {
   colWidths?: Record<string, number>
 }
 
+export interface ScreenerFilters {
+  min_price?: number | null; max_price?: number | null
+  min_change_pct?: number | null; max_change_pct?: number | null
+  min_volume?: number | null; min_avg_volume?: number | null
+  min_market_cap?: number | null; max_market_cap?: number | null
+  sector?: string; exchanges?: string[]
+}
+export interface ScreenerConfig extends WindowBase {
+  type: 'screener'
+  mode: 'preset' | 'custom'
+  preset: string
+  filters: ScreenerFilters
+  sortField: string
+  sortAsc: boolean
+  limit: number
+  includeOtc: boolean
+  columns: string[]
+  colWidths?: Record<string, number>
+}
+
 export interface NewsConfig extends WindowBase {
   type: 'news'
   mode: 'market' | 'linked'
@@ -158,7 +178,7 @@ export interface ClockConfig extends WindowBase { type: 'clock'; showSpy: boolea
 export interface SetupCheckConfig extends WindowBase { type: 'setupcheck'; symbol: string | null; minutes: number }
 
 export type WindowConfig =
-  | ScannerConfig | ChartConfig | ToplistConfig | NewsConfig
+  | ScannerConfig | ChartConfig | ToplistConfig | ScreenerConfig | NewsConfig
   | StockInfoConfig | WatchlistConfig | ClockConfig | SetupCheckConfig
 
 export interface Screen {
@@ -281,10 +301,13 @@ export interface StockInfo {
 
 export interface Fundamentals {
   symbol: string; ok: boolean; pending?: boolean; fetched_at?: string; error?: string
+  provider?: string
   name?: string | null; sector?: string | null; industry?: string | null
   market_cap?: number | null; shares_outstanding?: number | null; float_shares?: number | null
   short_pct_float?: number | null; short_ratio?: number | null; next_earnings?: string | null
   website?: string | null; summary?: string | null
+  schwab_instrument?: Record<string, string | number | null>
+  schwab_fundamentals?: Record<string, string | number | null>
 }
 
 export interface NewsItem {
@@ -298,7 +321,30 @@ export interface NewsPayload { fetched_at: string; stale?: boolean; error?: stri
 export interface UniverseMeta { last_price?: number; avg_vol_20d?: number; avg_dollar_vol_20d?: number; atr_pct?: number; sector_etf?: string }
 export interface UniverseMetaPayload { symbols: string[]; meta: Record<string, UniverseMeta> }
 
-export interface Watchlist { id: string; name: string; symbols: string[]; updatedAt: string }
+export interface Watchlist {
+  id: string; name: string; description?: string; symbols: string[]
+  createdAt?: string; updatedAt: string
+  source?: string; sourceLabel?: string; sourceProfileId?: string
+  sourceProfileHash?: string; capturedAt?: string
+}
+
+export interface YahooScreenerRow {
+  symbol: string; name: string; exchange: string; exchange_name: string
+  price: number | null; change_pct: number | null; volume: number | null
+  avg_volume: number | null; market_cap: number | null
+  fifty_two_week_high: number | null; fifty_two_week_low: number | null; sector: string
+}
+export interface YahooScreenerPayload {
+  mode: 'preset' | 'custom'; preset: string | null; label: string
+  rows: YahooScreenerRow[]; count: number; total: number; limit: number; cached: boolean
+}
+export interface YahooScreenerCatalog { presets: { id: string; label: string }[] }
+export interface UniverseSelectionPayload {
+  watchlist_id: string | null; watchlist_name: string | null; watchlist_found: boolean
+  selected_count: number; selected_total: number; current_count: number; current_total: number
+  support_count: number; support_symbols: string[]; cap: number; safe_watchlist_cap: number
+  applies_on_restart: boolean; applied: boolean; ok?: boolean
+}
 
 // ── Config panel (/api/v2/settings) ─────────────────────────────────────────
 

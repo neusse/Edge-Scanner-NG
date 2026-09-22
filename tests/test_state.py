@@ -99,6 +99,58 @@ def test_rrs_sector_computed_when_provided():
     assert state.rrs_sector_d1 is not None
 
 
+def test_daily_atr_14_is_computed_for_extension_filters():
+    n = 50
+    stock = _daily_bars([100.0 + i * 0.25 for i in range(n)], spread=1.0)
+    spy = _daily_bars([200.0 + i * 0.1 for i in range(n)])
+    state = SymbolState.from_history("X", stock, spy)
+    expected = float(wilder_atr(stock["high"], stock["low"], stock["close"], 14).iloc[-1])
+    assert state.atr_14_d1 == pytest.approx(expected)
+
+
+def test_intraday_sector_rrs_uses_completed_five_minute_bars():
+    state = _make_state(50)
+    start = pd.Timestamp("2024-01-02 09:30", tz="America/New_York")
+    for i in range(66):
+        stamp = (start + pd.Timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M")
+        stock = _bar(stamp, 100.0 + i * 0.10)
+        sector = _bar(stamp, 50.0 + i * 0.01)
+        sector["symbol"] = "XLK"
+        state.on_bar(stock, sector_bar=sector)
+    assert state.rrs_sector_m5 is not None
+    assert state.rrs_sector_m5 > 0
+
+
+def test_opening_candle_direction_and_same_slot_rvol():
+    state = _make_state(50)
+    state.volume_profile = pd.Series({0: 500.0, 5: 250.0})
+    for i in range(6):
+        bar = _bar(f"2024-01-02 09:{30 + i:02d}", 100.0 + i, volume=200.0)
+        state.on_bar(bar)
+
+    assert state.opening_candle_direction == 1.0
+    assert state.opening_rvol_m5 == pytest.approx(2.0)
+
+
+def test_opening_values_wait_for_completed_first_five_minute_candle():
+    state = _make_state(50)
+    state.volume_profile = pd.Series({0: 500.0})
+    for i in range(5):
+        state.on_bar(_bar(f"2024-01-02 09:{30 + i:02d}", 100.0, volume=100.0))
+    assert state.opening_candle_direction is None
+    assert state.opening_rvol_m5 is None
+
+
+def test_opening_rank_metadata_resets_with_the_session():
+    state = _make_state(50)
+    state.set_opening_rvol_rank(3.0, 80, 100)
+    assert state.opening_rvol_rank == 3.0
+    assert state.opening_rvol_coverage == pytest.approx(0.8)
+    state._reset_intraday()
+    assert state.opening_rvol_rank is None
+    assert state.opening_rvol_population == 0
+
+
 # ── from_history: chart quality ───────────────────────────────────────────────
 
 def test_chart_quality_in_range():

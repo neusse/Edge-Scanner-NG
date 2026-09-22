@@ -52,10 +52,12 @@ from scanner.custom_setups import CustomEvaluator
 from scanner.fundamentals import get_cache as get_fundamentals_cache
 from scanner.profiles import ProfileEngine
 from scanner.events import EventBuffer, make_hodlod_hook   # Dashboard V2 HOD/LOD ticker
-from scanner.fundamentals import start_background_prefetch  # Dashboard V2 Stock Info
 from scanner import plugins
 from scanner.alert_sink import AlertSink
 from scanner.universe import load_universe
+from scanner.universe_selection import (
+    UniverseSelectionError, load_active_universe, validate_stream_budget,
+)
 
 log = logging.getLogger(__name__)
 
@@ -340,7 +342,7 @@ def main() -> None:
     parser.add_argument("--feed", choices=FEEDS, default=_provider if _provider in FEEDS else "alpaca",
                         help="Market data provider (default: DATA_PROVIDER in .env, else alpaca)")
     parser.add_argument("--no-fundamentals", action="store_true",
-                        help="Skip the Dashboard V2 yfinance fundamentals prefetch (background "
+                        help="Skip the Dashboard V2 fundamentals prefetch (background "
                              "thread after warmup; never blocks scanning).")
     parser.add_argument("--port", type=int, default=7777,
                         help="Port for the dashboard, API and unified feed (default 7777). A second "
@@ -372,6 +374,13 @@ def main() -> None:
     # ── 1. Universe ───────────────────────────────────────────────────────────
     _step(1, TOTAL_STEPS, "Universe")
     symbols = _ensure_universe(args.refresh_universe, Path(args.universe), args.feed)
+    try:
+        active_universe = load_active_universe()
+    except UniverseSelectionError as exc:
+        sys.exit(f"\n  CANNOT START: {exc}\n")
+    if active_universe is not None:
+        symbols = active_universe.symbols
+        print(f"       Active watchlist: {active_universe.name} ({len(symbols)} symbols)", flush=True)
 
     # ── 2. Sector map ─────────────────────────────────────────────────────────
     _step(2, TOTAL_STEPS, "Sector map")
@@ -381,6 +390,16 @@ def main() -> None:
               "  The sector_rrs gate requires sector data --no alerts will fire.\n"
               "  Check your internet connection and try again.\n")
         sys.exit(1)
+    if active_universe is not None and args.feed == "schwab":
+        try:
+            budget = validate_stream_budget(active_universe, sector_etfs, cap=300)
+        except UniverseSelectionError as exc:
+            sys.exit(f"\n  CANNOT START: {exc}\n")
+        print(
+            f"       Schwab stream budget: {budget['watchlist_count']} watchlist + "
+            f"{budget['support_count']} support = {budget['total_count']}/{budget['cap']}",
+            flush=True,
+        )
 
     # ── 3. Daily history ──────────────────────────────────────────────────────
     _step(3, TOTAL_STEPS, f"Daily history  ({args.history_days} days)")
@@ -496,14 +515,30 @@ def main() -> None:
     seeded_from_bars: set[str] = set()
     try:
         all_syms = scanner.ranked_symbols()      # most liquid first: a provider may seed only the top
-        today_bars = feed.get_todays_bars_multi(all_syms, "1Min")
-        for sym, sym_bars in today_bars.items():
+        sector_syms = sorted(set(sector_map.values()) - {"SPY"})
+        requested = all_syms + [s for s in sector_syms if s not in all_syms]
+        today_bars = feed.get_todays_bars_multi(requested, "1Min")
+        sector_bar_maps: dict[str, dict] = {}
+        for sector_sym in sector_syms:
+            rows = today_bars.get(sector_sym, pd.DataFrame())
+            sector_bar_maps[sector_sym] = {
+                ts: {
+                    "symbol": sector_sym, "timestamp": ts,
+                    "open": float(row["open"]), "high": float(row["high"]),
+                    "low": float(row["low"]), "close": float(row["close"]),
+                    "volume": float(row["volume"]),
+                }
+                for ts, row in rows.iterrows()
+            }
+        for sym in all_syms:
+            sym_bars = today_bars.get(sym, pd.DataFrame())
             state = scanner._states.get(sym)
             if state is None or sym_bars.empty:
                 continue
             state._reset_intraday()  # clear any partial state from warmup
+            sector_bars = sector_bar_maps.get(sector_map.get(sym, ""), {})
             for ts, row in sym_bars.iterrows():
-                state.on_bar({
+                scanner.seed_session_bar({
                     "symbol":    sym,
                     "timestamp": ts,
                     "open":      float(row["open"]),
@@ -511,7 +546,7 @@ def main() -> None:
                     "low":       float(row["low"]),
                     "close":     float(row["close"]),
                     "volume":    float(row["volume"]),
-                }, spy_bar_map.get(ts))
+                }, spy_bar_map.get(ts), sector_bars.get(ts))
             seeded_from_bars.add(sym)
         print(
             f"       {len(seeded_from_bars)}/{len(all_syms)} symbols seeded from bars"
@@ -538,8 +573,17 @@ def main() -> None:
                 if state is None:
                     continue
                 state._reset_intraday()
-                state.on_bar({"symbol": sym, "timestamp": stamp, "open": q["open"], "high": q["high"],
-                              "low": q["low"], "close": q["last"], "volume": q["volume"]})
+                _bar = {"symbol": sym, "timestamp": stamp, "open": q["open"], "high": q["high"],
+                        "low": q["low"], "close": q["last"], "volume": q["volume"]}
+                state.on_bar(_bar)
+                # The candle rings get the day's high and low only, never this bar:
+                # it holds the whole session's volume, and as a candle it read as a
+                # 10x to 25x volume spike the moment its 5-minute candle closed
+                # (measured: 44 false Volume Spike alerts after one mid-session start).
+                _ser = scanner.series(sym)
+                _ser.session_date = _now_et.strftime("%Y-%m-%d")
+                _ser.day_high, _ser.day_low = q["high"], q["low"]
+                _ser.ext_high, _ser.ext_low = q["high"], q["low"]
             if todo:
                 print(f"       {len(quotes)}/{len(todo)} more symbols caught up from quotes (volume and "
                       f"high/low so far; VWAP approximate until the next start before the open)", flush=True)
@@ -555,8 +599,16 @@ def main() -> None:
     import threading
     import uvicorn
     if not args.no_fundamentals:
-        start_background_prefetch(list(scanner._states.keys()))
-        print("       Dashboard V2: fundamentals prefetch running in background (--no-fundamentals to skip)", flush=True)
+        fundamentals_cache = get_fundamentals_cache()
+        provider_fetch = getattr(feed, "get_fundamentals", None)
+        fundamentals_cache.configure_provider(
+            provider_fetch if callable(provider_fetch) else None,
+            args.feed if callable(provider_fetch) else None,
+        )
+        fundamentals_cache.start_background_prefetch(list(scanner._states.keys()))
+        source = "Schwab Instruments + Yahoo profile" if callable(provider_fetch) else "Yahoo Finance"
+        print(f"       Dashboard V2: {source} fundamentals prefetch running in background "
+              "(--no-fundamentals to skip)", flush=True)
     _api_app = create_app(app_state)
     print(f"       Dashboard V2: http://localhost:{args.port}/v2  (build: npm --prefix dashboard-v2 run build)", flush=True)
     _server_cfg = uvicorn.Config(_api_app, host=args.host, port=args.port, log_level="warning")

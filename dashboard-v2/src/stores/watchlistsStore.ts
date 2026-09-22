@@ -8,10 +8,12 @@ interface WatchlistsState {
   order: string[]
   loaded: boolean
   load(): Promise<void>
-  create(name: string, symbols?: string[]): string
+  create(name: string, symbols?: string[], extra?: Partial<Watchlist>): string
   rename(id: string, name: string): void
+  update(id: string, patch: Partial<Watchlist>): void
   remove(id: string): void
   setSymbols(id: string, symbols: string[]): void
+  mergeSymbols(id: string, symbols: string[]): void
 }
 
 const norm = (syms: string[]) => Array.from(new Set(syms.map(s => s.trim().toUpperCase()).filter(Boolean)))
@@ -35,8 +37,10 @@ export const useWatchlists = create<WatchlistsState>()((set, get) => ({
     } catch { set({ loaded: true }) }
   },
 
-  create(name, symbols = []) {
-    const w: Watchlist = { id: newId('wl'), name: name.trim() || 'Watchlist', symbols: norm(symbols), updatedAt: new Date().toISOString() }
+  create(name, symbols = [], extra = {}) {
+    const now = new Date().toISOString()
+    const w: Watchlist = { ...extra, id: newId('wl'), name: name.trim() || 'Watchlist',
+      description: extra.description?.trim() ?? '', symbols: norm(symbols), createdAt: now, updatedAt: now }
     set(s => ({ lists: { ...s.lists, [w.id]: w }, order: [...s.order, w.id] }))
     persist(w)
     return w.id
@@ -45,6 +49,15 @@ export const useWatchlists = create<WatchlistsState>()((set, get) => ({
   rename(id, name) {
     const w = get().lists[id]; if (!w) return
     const n = { ...w, name: name.trim() || w.name, updatedAt: new Date().toISOString() }
+    set(s => ({ lists: { ...s.lists, [id]: n } })); persist(n)
+  },
+
+  update(id, patch) {
+    const w = get().lists[id]; if (!w) return
+    const n: Watchlist = { ...w, ...patch, id: w.id,
+      name: (patch.name ?? w.name).trim() || w.name,
+      description: (patch.description ?? w.description ?? '').trim(),
+      symbols: norm(patch.symbols ?? w.symbols), updatedAt: new Date().toISOString() }
     set(s => ({ lists: { ...s.lists, [id]: n } })); persist(n)
   },
 
@@ -60,5 +73,10 @@ export const useWatchlists = create<WatchlistsState>()((set, get) => ({
     const w = get().lists[id]; if (!w) return
     const n = { ...w, symbols: norm(symbols), updatedAt: new Date().toISOString() }
     set(s => ({ lists: { ...s.lists, [id]: n } })); persist(n)
+  },
+
+  mergeSymbols(id, symbols) {
+    const w = get().lists[id]; if (!w) return
+    get().setSymbols(id, [...w.symbols, ...symbols])
   },
 }))

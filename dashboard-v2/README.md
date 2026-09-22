@@ -39,11 +39,17 @@ Other scripts: `npm run lint` (ESLint), `npm run preview` (serve the built bundl
 | Scanner | unified alert feed `ws://<host>:7777/ws/alerts` | per-window source, setup, direction, score and symbol filters; column picker; resizable columns; row tint; sound and text-to-speech |
 | Chart | `/api/bars` | intraday and daily timeframes, extended hours, VWAP, EMAs, daily SMAs, prior-day and premarket levels |
 | Rankings | `/api/v2/toplists`, `/api/premarket`, `/api/v2/events` | RVOL leaders, gainers and losers, 5-min movers, premarket lists, new HOD / LOD stream |
+| Screener | `/api/v2/screener/yahoo` | Yahoo candidate discovery with preset and custom filters; saves snapshots to watchlists |
 | News | `/api/v2/news` | market-wide or following the linked symbol |
-| Stock Info | `/api/v2/state`, `/api/v2/fundamentals` | live per-symbol state plus fundamentals |
+| Stock Info | `/api/v2/state`, `/api/v2/fundamentals` | live state plus Yahoo profile data and, on the Schwab feed, the full Instruments fundamental record |
 | Watchlist | `/api/v2/watchlists`, `/api/v2/snapshot` | editable lists with live columns |
 | Clock | `/api/v2/clock` | ET clock, session phase, market regime, SPY, feed health |
 | Setup check | `/api/v2/check/{symbol}` | what every setup did on one symbol in the last few minutes, and why |
+
+One watchlist can be assigned through `/api/v2/universe/selection` as the universe for the next scanner
+start. The selection is explicit, never unions multiple lists, and is limited to 288 user symbols so SPY
+and eleven sector ETFs fit within Schwab's 300 chart-stream limit. Watchlists support descriptions,
+provenance metadata, and CSV/text import and export.
 
 ## Alert sources
 

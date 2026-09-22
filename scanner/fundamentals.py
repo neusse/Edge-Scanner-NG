@@ -1,4 +1,4 @@
-"""Day-cached yfinance fundamentals for the Dashboard V2 Stock Info window.
+"""Day-cached fundamentals for the Dashboard V2 Stock Info window.
 
 Everything here is fail-open and off the request thread:
   * `FundamentalsCache.get(sym)` returns a good entry for FRESH_DAYS (name, sector,
@@ -9,7 +9,7 @@ Everything here is fail-open and off the request thread:
     the route answers `{pending: true}` until the worker lands the entry.
   * `prefetch_all` / `start_background_prefetch` warm the whole universe in
     a daemon thread after the scanner's warmup (run_live.py, `--no-fundamentals`
-    to skip). Yahoo rate-limits a burst of a few hundred lookups, so every fetch
+    to skip). Yahoo rate-limits a burst of a few hundred lookups, so every Yahoo fetch
     waits out a shared cool-down after a rate limit (60 s, doubling to 15 min).
     Refetching the whole universe every morning used to hit that limit after
     about a thousand symbols and blank the rest for the day.
@@ -97,9 +97,13 @@ class FundamentalsCache:
         path: Path = DEFAULT_PATH,
         *,
         ticker_factory: Optional[Callable[[str], object]] = None,
+        batch_fetcher: Optional[Callable[[list[str]], dict[str, dict]]] = None,
+        provider_name: Optional[str] = None,
     ) -> None:
         self._store = AtomicJsonStore(Path(path))
         self._factory = ticker_factory or _default_ticker_factory
+        self._batch_fetcher = batch_fetcher
+        self._provider_name = provider_name
         self._lock = threading.Lock()
         self._symbols: dict[str, dict] = {}
         self._dirty = False
@@ -110,6 +114,16 @@ class FundamentalsCache:
         self._cool_until = 0.0
         self._cool_s = _COOLDOWN_MIN_S
         self._load()
+
+    def configure_provider(
+        self,
+        batch_fetcher: Optional[Callable[[list[str]], dict[str, dict]]],
+        provider_name: Optional[str],
+    ) -> None:
+        """Attach the active feed's optional batched fundamentals capability."""
+        with self._lock:
+            self._batch_fetcher = batch_fetcher
+            self._provider_name = provider_name
 
     # ── disk ────────────────────────────────────────────────────────────────
 
@@ -146,6 +160,8 @@ class FundamentalsCache:
             return None
         if "website" not in entry:          # entry predates the website / summary fields: refetch
             return None
+        if self._provider_name and entry.get("provider") != self._provider_name:
+            return None
         # A rate limit is never a real answer: fetch again. Entries written before the
         # flag existed carry only the error text.
         if entry.get("rate_limited") or "rate limit" in str(entry.get("error") or "").lower():
@@ -172,9 +188,42 @@ class FundamentalsCache:
 
     # ── fetch ───────────────────────────────────────────────────────────────
 
-    def fetch_one(self, symbol: str) -> dict:
+    @staticmethod
+    def _merge_provider(entry: dict, row: Optional[dict], provider_name: Optional[str]) -> None:
+        if not row or provider_name != "schwab":
+            return
+        fundamental = row.get("fundamental") if isinstance(row.get("fundamental"), dict) else {}
+        short_pct = _num(fundamental.get("shortIntToFloat"))
+        entry.update({
+            "ok": True,
+            "provider": "schwab",
+            "name": entry.get("name") or row.get("description"),
+            "market_cap": _num(fundamental.get("marketCap")),
+            "shares_outstanding": _num(fundamental.get("sharesOutstanding")),
+            # Schwab's oddly named marketCapFloat behaves as float shares.
+            "float_shares": _num(fundamental.get("marketCapFloat")),
+            # Schwab supplies this as percentage points; the existing API uses a fraction.
+            "short_pct_float": short_pct / 100 if short_pct is not None else None,
+            "short_ratio": _num(fundamental.get("shortIntDayToCover")),
+            "schwab_instrument": {
+                key: row.get(key) for key in
+                ("assetType", "assetSubType", "cusip", "description", "exchange")
+                if row.get(key) is not None
+            },
+            "schwab_fundamentals": dict(fundamental),
+        })
+        entry.pop("error", None)
+        entry.pop("rate_limited", None)
+
+    def fetch_one(self, symbol: str, *, provider_row: Optional[dict] = None,
+                  fetch_provider: bool = True) -> dict:
         """Fetch one symbol synchronously. Never raises; failures come back as ok=False."""
         sym = symbol.upper().strip()
+        if fetch_provider and self._batch_fetcher is not None:
+            try:
+                provider_row = self._batch_fetcher([sym]).get(sym)
+            except Exception as exc:
+                log.debug("fundamentals provider: %s failed: %s", sym, exc)
         self._wait_cooldown()
         now = datetime.now(_ET)
         entry: dict = {
@@ -211,9 +260,10 @@ class FundamentalsCache:
                 self._start_cooldown()
                 with self._lock:
                     old = self._symbols.get(sym)
-                if old and old.get("ok"):
+                if old and old.get("ok") and provider_row is None:
                     return dict(old)        # keep the last good answer rather than blank it
             log.debug("fundamentals: %s failed: %s", sym, exc)
+        self._merge_provider(entry, provider_row, self._provider_name)
         self._put(sym, entry)
         return entry
 
@@ -239,10 +289,19 @@ class FundamentalsCache:
         todo = [s.upper().strip() for s in symbols if s and not self.is_fresh(s)]
         if not todo:
             return 0
+        provider_rows: dict[str, dict] = {}
+        if self._batch_fetcher is not None:
+            try:
+                provider_rows = self._batch_fetcher(todo)
+            except Exception as exc:
+                log.warning("fundamentals provider prefetch failed: %s", exc)
         done = 0
         try:
             with ThreadPoolExecutor(max_workers=max(1, workers), thread_name_prefix="fund") as ex:
-                futs = {ex.submit(self.fetch_one, s): s for s in todo}
+                futs = {
+                    ex.submit(self.fetch_one, s, provider_row=provider_rows.get(s), fetch_provider=False): s
+                    for s in todo
+                }
                 for fut in as_completed(futs):
                     done += 1
                     if done % _FLUSH_EVERY == 0:
