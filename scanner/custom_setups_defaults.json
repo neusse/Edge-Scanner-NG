@@ -71,7 +71,7 @@
           "repeat_sec": 0
         }
       ],
-      "notes": "A 1-minute close above the highest high, or below the lowest low, of the last 60 completed sessions. A true 60-session level needs about a year of daily history loaded (--history-days).",
+      "notes": "The first intraday trade above the highest high, or below the lowest low, of the last 60 completed sessions. Each side alerts only once per trading day; retreats, recrosses, and later HOD/LOD moves do not repeat it. A true 60-session level needs about a year of daily history loaded (--history-days).",
       "universe_profile": "up_liquid_movers",
       "parameters": [],
       "parameter_set": "",

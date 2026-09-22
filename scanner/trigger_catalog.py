@@ -179,7 +179,8 @@ def _build_catalog() -> list[TriggerDef]:
                    "both", _HL, "Side", sessions=("rth",), default_options=("high",)))
     # Id kept as hi_lo_60d so saved setups load unchanged; Days defaults to 60.
     add(TriggerDef("hi_lo_60d", "N-day high/low", "Highs & lows",
-                   "Close crosses the highest high (lowest low) of the last N completed sessions. "
+                   "First intraday trade above the highest high (below the lowest low) of the last N completed sessions. "
+                   "Each side fires at most once per trading day, so retreats and recrosses do not repeat the alert. "
                    "Needs at least N sessions of daily history loaded at startup; with fewer it "
                    "does not fire, rather than quietly using a shorter window.", "both", _HL, "Side",
                    params=(ParamDef("days", "Days", 60, 2, 252, 1, "sessions",
@@ -565,6 +566,15 @@ class SymbolSeries:
     def on_bar(self, bar: dict, et_min: int, day: str, vwap: Optional[float]) -> str:
         """Append a 1-min bar. Returns the session tag."""
         if day != self.session_date:
+            # Carry the completed live session into the rolling daily reference.
+            # The initial startup transition has no day extrema, so it cannot
+            # duplicate the history loaded by seed_daily().
+            if self.session_date is not None and self.day_high is not None and self.day_low is not None:
+                self.daily_highs = (self.daily_highs + [self.day_high])[-252:]
+                self.daily_lows = (self.daily_lows + [self.day_low])[-252:]
+                self.daily["hi_52w"] = max(self.daily_highs) if self.daily_highs else None
+                self.daily["lo_52w"] = min(self.daily_lows) if self.daily_lows else None
+                self.daily["days"] = len(self.daily_highs)
             self.session_date = day
             self.day_high = self.day_low = None
             self.ext_high = self.ext_low = None
@@ -914,14 +924,37 @@ def n_day_level(series: "SymbolSeries", state: Any, days: int, side: str) -> Opt
     return max(window) if side == "high" else min(window)
 
 
+def n_day_latch_key(days: int, side: str) -> str:
+    """Session-scoped memory key for an N-day high/low side."""
+    return f"hi_lo_60d:{int(days)}:{side}:alerted"
+
+
 @_impl("hi_lo_60d")
 def _t_60d(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     days = int(p.get("days", 60) or 60)
     lvl = n_day_level(c.series, c.state, days, opt)
     if lvl is None:
         return None
-    if _cross(c.prev_close, c.close, lvl, opt == "high"):
-        return Fire("long" if opt == "high" else "short", lvl, f"{days}-day {opt} {lvl:.2f}")
+    latch = n_day_latch_key(days, opt)
+    if c.series.mem.get(latch):
+        return None
+
+    # seed_session_bar() intentionally advances the series without evaluating
+    # alerts. If those seeded bars already breached the level, latch silently so
+    # a restart cannot emit a stale alert on the next live HOD/LOD.
+    prior_extreme = c.series.prev_day_high if opt == "high" else c.series.prev_day_low
+    already_breached = (prior_extreme is not None and
+                        (prior_extreme > lvl if opt == "high" else prior_extreme < lvl))
+    if already_breached:
+        c.series.mem[latch] = True
+        return None
+
+    extreme = float(c.bar["high" if opt == "high" else "low"])
+    breached = extreme > lvl if opt == "high" else extreme < lvl
+    if breached:
+        c.series.mem[latch] = True
+        return Fire("long" if opt == "high" else "short", lvl,
+                    f"first {days}-day {opt} beyond {lvl:.2f}")
     return None
 
 
