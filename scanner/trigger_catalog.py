@@ -349,7 +349,7 @@ def _build_catalog() -> list[TriggerDef]:
                    "short", _tf_options(1, 3, 5, 15), params=_VWAP_TOUCH,
                    sessions=("rth",), default_options=("3",)))
     add(TriggerDef("back_to_ema", "Back to EMA", "Crosses & levels",
-                   "Price stayed away from the EMA for N candles and now comes back to touch it (from above = long pullback, from below = short).",
+                   "Each of N completed candles stayed the configured distance from its own EMA-at-close; the current bar then touches the current EMA and closes on the original side (from above = long pullback, from below = short).",
                    "both", (OptionDef("ema9_1", "EMA(9) 1 min"), OptionDef("ema20_1", "EMA(20) 1 min"),
                             OptionDef("ema9_5", "EMA(9) 5 min"), OptionDef("ema20_5", "EMA(20) 5 min"),
                             OptionDef("ema9_15", "EMA(9) 15 min"), OptionDef("ema21_15", "EMA(21) 15 min")), "EMA",
@@ -477,7 +477,7 @@ class SymbolSeries:
             # seed from candles already known for that timeframe
             for c in self.candles[tf]:
                 if c.get("session", "rth") == "rth":
-                    e.push(c["close"])
+                    c.setdefault("ema_at_close", {})[period] = e.push(c["close"])
         return e
 
     def want_ema(self, tf: int, period: int) -> None:
@@ -543,7 +543,7 @@ class SymbolSeries:
             self.emas[(tf, period)] = _Ema(period)
             for c in self.candles[tf]:
                 if c.get("session", "rth") == "rth":
-                    self.emas[(tf, period)].push(c["close"])
+                    c.setdefault("ema_at_close", {})[period] = self.emas[(tf, period)].push(c["close"])
 
     # ── live ──
     def on_bar(self, bar: dict, et_min: int, day: str, vwap: Optional[float]) -> str:
@@ -591,7 +591,7 @@ class SymbolSeries:
                     self.completed[tf] = True
                     for (etf, period), e in self.emas.items():
                         if etf == tf and p["session"] == "rth":
-                            e.push(p["close"])
+                            p.setdefault("ema_at_close", {})[period] = e.push(p["close"])
                 self.partial[tf] = {"key": key, "open": o, "high": h, "low": l, "close": c, "volume": v,
                                     "vwap": vwap, "et_min": et_min, "session": sess}
             else:
@@ -1460,20 +1460,23 @@ def _t_bte(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
         return None
     n = int(p["away_candles"])
     away = float(p["away_pct"]) / 100.0
-    cs = s.last_completed(tf, n)
+    cs = [x for x in s.candles[tf] if x.get("session", "rth") == "rth"][-n:]
     if len(cs) < n:
         return None
-    # was the price clearly above (or below) the EMA for the last n completed candles?
+    # Compare each completed candle with the EMA that existed at that close.
+    history = [x.get("ema_at_close", {}).get(period) for x in cs]
+    if any(value is None for value in history):
+        return None
     ev = e.value
-    above = all(x["low"] > ev * (1 + away) for x in cs)
-    below = all(x["high"] < ev * (1 - away) for x in cs)
+    above = all(x["low"] > at * (1 + away) for x, at in zip(cs, history))
+    below = all(x["high"] < at * (1 - away) for x, at in zip(cs, history))
     cur = s.partial[tf]
     if cur is None:
         return None
     key = f"bte:{opt}:{cur['key']}"
-    if above and float(c.bar["low"]) <= ev and c.once(key):
+    if above and float(c.bar["low"]) <= ev <= c.close and c.once(key):
         return Fire("long", ev, f"back to {_level_label(opt) if opt in [o.key for o in LEVELS] else opt} {ev:.2f} from above")
-    if below and float(c.bar["high"]) >= ev and c.once(key):
+    if below and float(c.bar["high"]) >= ev >= c.close and c.once(key):
         return Fire("short", ev, f"back to {opt} {ev:.2f} from below")
     return None
 

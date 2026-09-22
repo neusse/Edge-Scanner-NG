@@ -303,6 +303,12 @@ that tolerance, inclusive; the prior candle and current close must remain on the
 and the touch candle must close green for support or red for resistance. A shallow penetration is a
 touch. A deep cross, reclaim, or gap-through is not; use the cross/through or rejection triggers
 for those events. The scanner does not call a deep excursion a VWAP support/resistance hold.
+"Back to EMA" compares each of the configured prior completed candles to the EMA value at
+**that candle's close**, not to the current EMA. All prior candles must be beyond the chosen
+percentage distance on the same side. The current bar must touch the current EMA and close on
+that original side (equality counts as a hold); if it closes through, the pullback condition does
+not fire. There must be enough completed regular-session candles to warm the EMA and satisfy the
+away window. The EMA history follows the same seed/session rule described above.
 
 ### Custom setups
 
