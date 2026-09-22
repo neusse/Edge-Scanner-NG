@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "One Live Bar to One Alert",
+    "output": "live-alert.html",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [1040, 560],
+    "views": [
+      {
+        "id": "subscription",
+        "label": "Subscribe and catch up",
+        "focus": ["subscriber", "hub"],
+        "note": "A subscriber connects with filters and receives a bounded replay before live alerts."
+      },
+      {
+        "id": "bar-processing",
+        "label": "Process one bar",
+        "focus": ["provider", "scanner", "state", "evaluator"],
+        "note": "The scanner updates symbol state and indicators before evaluating setups."
+      },
+      {
+        "id": "alert-delivery",
+        "label": "Accept and deliver",
+        "focus": ["evaluator", "hub", "archive", "subscriber"],
+        "note": "Only accepted alerts are archived and sent to matching subscribers."
+      }
+    ]
+  },
+  "participants": [
+    { "id": "provider", "type": "external", "label": "Data Provider", "sublabel": "live stream" },
+    { "id": "scanner", "type": "backend", "label": "Live Scanner", "sublabel": "bar callback" },
+    { "id": "state", "type": "backend", "label": "Symbol State", "sublabel": "levels + indicators" },
+    { "id": "evaluator", "type": "backend", "label": "Setup Evaluator", "sublabel": "triggers + gates" },
+    { "id": "hub", "type": "messagebus", "label": "Alert Hub", "sublabel": "cooldown + fan-out" },
+    { "id": "archive", "type": "database", "label": "Alert Archive", "sublabel": "daily JSONL" },
+    { "id": "subscriber", "type": "frontend", "label": "Subscriber", "sublabel": "dashboard or local app" }
+  ],
+  "segments": [
+    { "from": 150, "to": 235, "label": "Connection" },
+    { "from": 245, "to": 405, "label": "Minute-bar processing" },
+    { "from": 400, "to": 490, "label": "Accepted alert" }
+  ],
+  "messages": [
+    { "id": "connect", "from": "subscriber", "to": "hub", "y": 175, "label": "connect /ws/alerts?filters", "variant": "default" },
+    { "id": "replay", "from": "hub", "to": "subscriber", "y": 210, "label": "replay frame (newest first)", "variant": "return", "note": "The frame reports when its bounded history is truncated." },
+    { "id": "minute-bar", "from": "provider", "to": "scanner", "y": 270, "label": "normalized 1-minute bar", "variant": "emphasis" },
+    { "id": "update-state", "from": "scanner", "to": "state", "y": 310, "label": "update price, volume, levels, indicators", "variant": "emphasis" },
+    { "id": "state-ready", "from": "state", "to": "scanner", "y": 345, "label": "updated state", "variant": "return" },
+    { "id": "evaluate", "from": "scanner", "to": "evaluator", "y": 380, "label": "evaluate enabled setups", "variant": "emphasis" },
+    { "id": "accepted", "from": "evaluator", "to": "hub", "y": 415, "label": "push accepted alert", "variant": "emphasis", "note": "Repeated alerts inside the configured cooldown are rejected before publication." },
+    { "id": "persist", "from": "hub", "to": "archive", "y": 445, "label": "append JSONL", "variant": "default" },
+    { "id": "deliver", "from": "hub", "to": "subscriber", "y": 475, "label": "live alert frame", "variant": "emphasis" }
+  ],
+  "activations": [
+    { "participant": "scanner", "from": 265, "to": 410, "type": "backend" },
+    { "participant": "state", "from": 305, "to": 352, "type": "backend" },
+    { "participant": "evaluator", "from": 375, "to": 427, "type": "backend" },
+    { "participant": "hub", "from": 170, "to": 485, "type": "messagebus" },
+    { "participant": "archive", "from": 445, "to": 468, "type": "database" },
+    { "participant": "subscriber", "from": 170, "to": 485, "type": "frontend" }
+  ]
+}

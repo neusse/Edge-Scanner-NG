@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Edge Scanner NG System Architecture",
+    "output": "edge-scanner-system.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/neusse/Edge-Scanner-NG",
+      "revision": "a9a9d7854c9a11cd9cceea5dfae267286d18200c"
+    },
+    "viewBox": [1320, 720],
+    "views": [
+      {
+        "id": "market-data-path",
+        "label": "Market data to alerts",
+        "focus": ["market-data", "provider", "scanner", "setup-engine", "alert-api"],
+        "note": "Follow one provider connection through state updates, setup evaluation, and accepted alerts."
+      },
+      {
+        "id": "operator-path",
+        "label": "Dashboard and configuration",
+        "focus": ["dashboard", "alert-api", "storage", "setup-engine"],
+        "note": "The local dashboard reads live state and saves setups, layouts, watchlists, and filters."
+      },
+      {
+        "id": "integration-path",
+        "label": "External alert consumers",
+        "focus": ["setup-engine", "alert-api", "consumers"],
+        "note": "Other local programs subscribe to the unified alert WebSocket; Edge Scanner does not place orders."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "market-data",
+      "type": "external",
+      "label": "Market Data Provider",
+      "sublabel": "Alpaca or Schwab",
+      "pos": [40, 192],
+      "size": [155, 72]
+    },
+    {
+      "id": "launcher",
+      "type": "backend",
+      "label": "Startup Orchestrator",
+      "sublabel": "scripts/run_live.py",
+      "tag": "one process",
+      "pos": [250, 80],
+      "size": [165, 76],
+      "sources": [
+        { "path": "scripts/run_live.py", "label": "startup pipeline" }
+      ]
+    },
+    {
+      "id": "provider",
+      "type": "backend",
+      "label": "DataFeed Adapter",
+      "sublabel": "history + one live stream",
+      "pos": [250, 190],
+      "size": [165, 76],
+      "sources": [
+        { "path": "scanner/data/interface.py", "label": "provider contract" },
+        { "path": "scanner/data/schwab.py", "label": "Schwab adapter" },
+        { "path": "scanner/data/alpaca.py", "label": "Alpaca adapter" }
+      ]
+    },
+    {
+      "id": "scanner",
+      "type": "backend",
+      "label": "Live Scanner",
+      "sublabel": "symbol state + indicators",
+      "tag": "1-minute bars",
+      "pos": [470, 190],
+      "size": [165, 76],
+      "sources": [
+        { "path": "scanner/live_scanner.py", "label": "bar processing" },
+        { "path": "scanner/state.py", "label": "symbol state" },
+        { "path": "scanner/indicators/__init__.py", "label": "indicators" }
+      ]
+    },
+    {
+      "id": "setup-engine",
+      "type": "backend",
+      "label": "Setup Evaluators",
+      "sublabel": "triggers + conditions",
+      "tag": "edge-triggered",
+      "pos": [690, 190],
+      "size": [165, 76],
+      "sources": [
+        { "path": "scanner/custom_setups.py", "label": "custom evaluator" },
+        { "path": "scanner/trigger_catalog.py", "label": "trigger catalog" },
+        { "path": "scanner/conditions.py", "label": "condition catalog" }
+      ]
+    },
+    {
+      "id": "alert-api",
+      "type": "messagebus",
+      "label": "Alert Hub + Local API",
+      "sublabel": "FastAPI REST / WebSocket",
+      "tag": "localhost:7777",
+      "pos": [910, 190],
+      "size": [175, 76],
+      "sources": [
+        { "path": "scanner/feed_hub.py", "label": "alert fan-out" },
+        { "path": "scanner/api.py", "label": "API and WebSocket" },
+        { "path": "scanner/api_v2.py", "label": "dashboard API" }
+      ]
+    },
+    {
+      "id": "storage",
+      "type": "database",
+      "label": "Local Data Directory",
+      "sublabel": "caches, config, alerts",
+      "tag": "data/ (gitignored)",
+      "pos": [690, 390],
+      "size": [165, 76],
+      "sources": [
+        { "path": "scanner/alert_store.py", "label": "alert archive" },
+        { "path": "scanner/json_store.py", "label": "user configuration" }
+      ]
+    },
+    {
+      "id": "dashboard",
+      "type": "frontend",
+      "label": "React Dashboard",
+      "sublabel": "charts, scanners, Config",
+      "tag": "/v2",
+      "pos": [910, 390],
+      "size": [175, 76],
+      "sources": [
+        { "path": "dashboard-v2/src/App.tsx", "label": "dashboard shell" },
+        { "path": "dashboard-v2/src/lib/api.ts", "label": "API client" },
+        { "path": "dashboard-v2/src/lib/ws.ts", "label": "alert client" }
+      ]
+    },
+    {
+      "id": "consumers",
+      "type": "external",
+      "label": "Alert Consumers",
+      "sublabel": "analysis / trading code",
+      "tag": "signals, not orders",
+      "pos": [1140, 190],
+      "size": [155, 76]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Local machine — localhost only by default",
+      "wraps": ["launcher", "provider", "scanner", "setup-engine", "alert-api", "storage", "dashboard"]
+    }
+  ],
+  "connections": [
+    { "id": "start-components", "from": "launcher", "to": "provider", "label": "create + seed", "fromSide": "bottom", "toSide": "top", "labelAt": [333, 173] },
+    { "id": "provider-history", "from": "provider", "to": "storage", "label": "read/write bar cache", "fromSide": "bottom", "toSide": "left" },
+    { "id": "market-stream", "from": "market-data", "to": "provider", "label": "history + live stream", "variant": "emphasis", "labelAt": [223, 178] },
+    { "id": "minute-bars", "from": "provider", "to": "scanner", "label": "normalized bars", "variant": "emphasis", "labelAt": [443, 178] },
+    { "id": "updated-state", "from": "scanner", "to": "setup-engine", "label": "updated symbol state", "variant": "emphasis", "labelAt": [663, 178] },
+    { "id": "accepted-alerts", "from": "setup-engine", "to": "alert-api", "label": "accepted alerts", "variant": "emphasis", "labelAt": [883, 178] },
+    { "id": "config-load", "from": "storage", "to": "setup-engine", "label": "setups + filters", "fromSide": "top", "toSide": "bottom" },
+    { "id": "alert-archive", "from": "alert-api", "to": "storage", "label": "JSONL + settings", "fromSide": "bottom", "toSide": "right" },
+    { "id": "dashboard-api", "from": "alert-api", "to": "dashboard", "label": "REST + alerts", "fromSide": "bottom", "toSide": "top", "labelAt": [998, 330] },
+    { "id": "external-feed", "from": "alert-api", "to": "consumers", "label": "ws://…/ws/alerts", "variant": "dashed", "labelAt": [1113, 178] }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Single ingestion path",
+      "items": ["One provider adapter owns history and the live stream", "Every normalized bar advances the same in-process scanner state"]
+    },
+    {
+      "dot": "emerald",
+      "title": "Local-first operation",
+      "items": ["FastAPI serves both dashboard data and the unified alert feed", "Caches, configuration, and alert archives remain under data/"]
+    },
+    {
+      "dot": "amber",
+      "title": "Execution boundary",
+      "items": ["Edge Scanner emits observations and suggested risk context", "Downstream software owns duplicate handling, risk controls, and orders"]
+    }
+  ]
+}

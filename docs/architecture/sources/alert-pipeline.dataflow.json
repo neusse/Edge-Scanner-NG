@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Edge Scanner Alert Data Flow",
+    "output": "alert-pipeline.html",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 560],
+    "views": [
+      {
+        "id": "live-alert-path",
+        "label": "Live alert path",
+        "focus": ["market-feed", "adapter", "state", "evaluator", "hub"],
+        "note": "Trace a normalized minute bar into an accepted setup alert."
+      },
+      {
+        "id": "persistence-path",
+        "label": "Caches and archives",
+        "focus": ["bar-cache", "adapter", "config", "evaluator", "hub", "archive"],
+        "note": "Historical bars seed scanner state while configuration and accepted alerts persist locally."
+      },
+      {
+        "id": "consumer-path",
+        "label": "Consumer delivery",
+        "focus": ["hub", "dashboard", "external-consumer"],
+        "note": "The dashboard and other local programs consume the same unified alert contract."
+      }
+    ]
+  },
+  "stages": [
+    { "label": "Acquire" },
+    { "label": "Normalize + state" },
+    { "label": "Evaluate" },
+    { "label": "Accept + retain" },
+    { "label": "Consume" }
+  ],
+  "nodes": [
+    { "id": "market-feed", "type": "external", "label": "Provider APIs", "sublabel": "history + live bars", "stage": 0, "row": 0, "tag": "Alpaca / Schwab" },
+    { "id": "bar-cache", "type": "database", "label": "Bar Cache", "sublabel": "daily + 5-minute", "stage": 0, "row": 1, "tag": "data/" },
+    { "id": "config", "type": "database", "label": "Setup Configuration", "sublabel": "setups + filters", "stage": 0, "row": 2, "tag": "hot reload" },
+    { "id": "adapter", "type": "backend", "label": "DataFeed Adapter", "sublabel": "provider normalization", "stage": 1, "row": 0, "tag": "one live stream" },
+    { "id": "state", "type": "backend", "label": "Symbol State", "sublabel": "levels + indicators", "stage": 1, "row": 1, "tag": "per symbol" },
+    { "id": "evaluator", "type": "backend", "label": "Setup Evaluators", "sublabel": "triggers + conditions", "stage": 2, "row": 1, "tag": "each minute bar" },
+    { "id": "hub", "type": "messagebus", "label": "Accepted Alert Hub", "sublabel": "cooldown + fan-out", "stage": 3, "row": 1, "tag": "replay then live" },
+    { "id": "dashboard", "type": "frontend", "label": "Dashboard", "sublabel": "scanner windows", "stage": 4, "row": 0, "tag": "REST + WebSocket" },
+    { "id": "external-consumer", "type": "external", "label": "Trading Code", "sublabel": "local subscriber", "stage": 4, "row": 1, "tag": "orders out of scope", "width": 128 },
+    { "id": "archive", "type": "database", "label": "Alert Archive", "sublabel": "daily JSONL", "stage": 4, "row": 2, "tag": "data/alerts/all" }
+  ],
+  "flows": [
+    { "id": "history-and-live", "from": "market-feed", "to": "adapter", "label": "provider payloads", "classification": "authenticated", "variant": "emphasis", "route": "straight", "labelAt": [208, 110] },
+    { "id": "cache-read", "from": "bar-cache", "to": "adapter", "label": "cached history", "classification": "local", "variant": "default", "labelAt": [175, 314] },
+    { "id": "normalized-bars", "from": "adapter", "to": "state", "label": "normalized bars", "classification": "timestamped", "variant": "emphasis", "labelAt": [387, 200] },
+    { "id": "state-to-evaluator", "from": "state", "to": "evaluator", "label": "symbol state", "classification": "in process", "variant": "emphasis", "route": "straight", "labelAt": [423, 320] },
+    { "id": "config-to-evaluator", "from": "config", "to": "evaluator", "label": "compiled setup plan", "classification": "local config", "variant": "default", "route": "bottom-channel" },
+    { "id": "accepted-alert", "from": "evaluator", "to": "hub", "label": "accepted alert", "classification": "JSON signal", "variant": "emphasis", "route": "straight", "labelDy": -24 },
+    { "id": "archive-alert", "from": "hub", "to": "archive", "label": "append alert", "classification": "JSONL", "variant": "default" },
+    { "id": "dashboard-feed", "from": "hub", "to": "dashboard", "label": "replay + live alerts", "classification": "WebSocket", "variant": "emphasis" },
+    { "id": "external-feed", "from": "hub", "to": "external-consumer", "label": "filtered alert stream", "classification": "WebSocket", "variant": "dashed", "labelAt": [970, 320] }
+  ]
+}

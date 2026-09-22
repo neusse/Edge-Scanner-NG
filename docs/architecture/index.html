@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Edge Scanner NG Architecture Report</title>
+  <style>
+    :root{color-scheme:light dark;font:16px/1.55 system-ui,sans-serif}body{max-width:1050px;margin:0 auto;padding:48px 24px}h1{font-size:clamp(2rem,5vw,3.8rem);line-height:1.08}p{max-width:780px;color:#78869b}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:18px;margin:32px 0}.item{border:1px solid #64748b55;border-radius:14px;padding:22px}.item h2{margin-top:0}.item a{font-weight:750;color:#0ea5a4}.note{border-left:4px solid #f59e0b;padding:12px 18px;background:#f59e0b12}code{font-size:.9em}
+  </style>
+</head>
+<body>
+  <p><a href="../">← Documentation home</a></p>
+  <h1>Edge Scanner NG architecture report</h1>
+  <p>Three complementary, source-backed views explain the system without mixing the scanner's alerting responsibility with downstream trade execution.</p>
+  <div class="grid">
+    <article class="item"><h2>System architecture</h2><p>Start here for component ownership, the localhost boundary, local storage, and external integrations.</p><a href="edge-scanner-system.html">Open interactive architecture →</a></article>
+    <article class="item"><h2>Alert data flow</h2><p>See how provider payloads, caches, setup configuration, accepted alerts, and consumers relate.</p><a href="alert-pipeline.html">Open interactive data flow →</a></article>
+    <article class="item"><h2>Live-alert sequence</h2><p>Follow subscription replay and one completed minute bar through state, evaluation, archival, and delivery.</p><a href="live-alert.html">Open interactive sequence →</a></article>
+  </div>
+  <h2>Key finding</h2>
+  <p>Edge Scanner has one in-process market-data path and one accepted-alert distribution path. The dashboard and other local programs consume signals from the same hub; they do not share brokerage authority.</p>
+  <div class="note"><strong>Integration status:</strong> the current WebSocket is useful, but its sequence number is process-local. The durable, versioned trading-code contract is tracked in <a href="https://github.com/neusse/Edge-Scanner-NG/issues/17">issue #17</a>.</div>
+  <h2>Evidence and validation</h2>
+  <p>The architecture source pins commit <code>a9a9d7854c9a11cd9cceea5dfae267286d18200c</code>. All artifacts pass nine Archify showcase checks with no composition errors or warnings, plus desktop light/dark containment and readability checks at four viewport sizes.</p>
+  <p>Read the complete <a href="https://github.com/neusse/Edge-Scanner-NG/blob/main/docs/ARCHITECTURE.md">architecture report and evidence map</a>.</p>
+</body>
+</html>

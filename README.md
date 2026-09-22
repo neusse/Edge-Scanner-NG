@@ -161,6 +161,17 @@ python scripts/install_setup_library.py
 
 The full guide is [USER_GUIDE.md](USER_GUIDE.md).
 
+## Architecture documentation
+
+The source-backed architecture set is published on GitHub Pages:
+
+- [System architecture](https://neusse.github.io/Edge-Scanner-NG/architecture/edge-scanner-system.html)
+- [Alert data flow](https://neusse.github.io/Edge-Scanner-NG/architecture/alert-pipeline.html)
+- [One live bar to one alert](https://neusse.github.io/Edge-Scanner-NG/architecture/live-alert.html)
+
+See the versioned [architecture report and evidence map](docs/ARCHITECTURE.md) for the scope,
+source revision, integration boundaries, and validation status.
+
 ## Updating to a new release
 
 ```bash
