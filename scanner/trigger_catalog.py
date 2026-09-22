@@ -180,7 +180,7 @@ def _build_catalog() -> list[TriggerDef]:
                    "New high or low of the day including the premarket session.", "both", _HL, "Side",
                    default_options=("high",)))
     add(TriggerDef("near_hod", "Near high/low of the day", "Highs & lows",
-                   "Price comes within one 20-period 1-min ATR of the day's high or low without breaking it. Fires once per approach.",
+                   "Close approaches within one 20-period 1-min ATR of the prior HOD/LOD, while the current bar's high/low stays inside that level (touch allowed, wick-through excluded). Fires once per approach.",
                    "both", _HL, "Side", sessions=("rth",), default_options=("high",)))
     # Id kept as hi_lo_60d so saved setups load unchanged; Days defaults to 60.
     add(TriggerDef("hi_lo_60d", "N-day high/low", "Highs & lows",
@@ -218,11 +218,11 @@ def _build_catalog() -> list[TriggerDef]:
                    "short", _ALL_TF, params=(ParamDef("lookback", "Swing lookback", 5, 2, 50, 1, "candles"),),
                    default_options=("5",)))
     add(TriggerDef("near_last_high", "Near last high", "Highs & lows",
-                   "Price is within one 20-candle ATR of the latest swing high without having broken it. Fires once per approach.",
+                   "Close is within one 20-candle ATR of the latest swing high and the current bar's high does not exceed it. Touch allowed; wick-through excluded. Fires once per approach.",
                    "long", _ALL_TF, params=(ParamDef("lookback", "Swing lookback", 5, 2, 50, 1, "candles"),),
                    default_options=("15",)))
     add(TriggerDef("near_last_low", "Near last low", "Highs & lows",
-                   "Price is within one 20-candle ATR of the latest swing low without having broken it. Fires once per approach.",
+                   "Close is within one 20-candle ATR of the latest swing low and the current bar's low does not fall below it. Touch allowed; wick-through excluded. Fires once per approach.",
                    "short", _ALL_TF, params=(ParamDef("lookback", "Swing lookback", 5, 2, 50, 1, "candles"),),
                    default_options=("15",)))
     add(TriggerDef("reject_last_high", "Reject last high", "Highs & lows",
@@ -881,7 +881,7 @@ def _t_near_hod(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
         if lvl is None:
             return None
         dist = lvl - c.close
-        near = 0 < dist < atr
+        near = 0 < dist < atr and float(c.bar["high"]) <= lvl
         if c.edge(f"near_hod:{opt}", near):
             return Fire("long", dist, f"{dist:.2f} below HOD {lvl:.2f}")
     else:
@@ -889,7 +889,7 @@ def _t_near_hod(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
         if lvl is None:
             return None
         dist = c.close - lvl
-        near = 0 < dist < atr
+        near = 0 < dist < atr and float(c.bar["low"]) >= lvl
         if c.edge(f"near_hod:{opt}", near):
             return Fire("short", dist, f"{dist:.2f} above LOD {lvl:.2f}")
     return None
@@ -1054,7 +1054,8 @@ def _near_last(c: EvalCtx, tf: int, lookback: int, side: str) -> Optional[Fire]:
     if lvl is None or atr is None or atr <= 0:
         return None
     dist = (lvl - c.close) if side == "high" else (c.close - lvl)
-    near = 0 < dist < atr
+    inside = float(c.bar["high"]) <= lvl if side == "high" else float(c.bar["low"]) >= lvl
+    near = 0 < dist < atr and inside
     if c.edge(f"near:{side}:{tf}", near):
         return Fire("long" if side == "high" else "short", dist, f"{dist:.2f} from {TF_LABEL[tf]} {side} {lvl:.2f}")
     return None

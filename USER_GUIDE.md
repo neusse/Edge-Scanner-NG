@@ -292,6 +292,10 @@ through it counts even if the bar closes back inside. A restart replay silently 
 and later recrosses do not repeat the milestone. Setup Check shows the level, lifetime, and whether
 that side already alerted. A later genuine HOD/LOD remains independent and may still alert. EMA/VWAP
 crosses retain their recross behavior and setup cooldown.
+"Near HOD/LOD" and "Near last high/low" use an intrabar no-break rule: the close must be
+within one ATR on the inside of the stored level, and the **bar's high or low** must not have
+crossed it. An exact touch is allowed. A wick-through, rejection, close-through, or gap-through
+is not a near-level event; use a breakout or rejection trigger for those behaviors.
 
 ### Custom setups
 

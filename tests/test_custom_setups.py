@@ -1169,6 +1169,36 @@ def test_reference_milestone_stock_check_exposes_lifetime_and_latch(tmp_path):
     assert "already alerted" in row["note"]
 
 
+@pytest.mark.parametrize("trigger,side", [
+    ("near_hod", "high"), ("near_hod", "low"),
+    ("near_last_high", "high"), ("near_last_low", "low"),
+])
+def test_near_level_requires_the_entire_bar_to_stay_inside(trigger, side):
+    from types import SimpleNamespace
+    from scanner.trigger_catalog import EvalCtx, _IMPL
+
+    def fire(high, low, close):
+        series = SimpleNamespace(mem={}, prev_day_high=100.0, prev_day_low=100.0,
+                                 atr=lambda tf, period: 1.0,
+                                 swing=lambda tf, lookback, requested: 100.0)
+        bar = {"open": close, "high": high, "low": low, "close": close, "volume": 1}
+        ctx = EvalCtx(state=SimpleNamespace(symbol="X"), series=series, bar=bar,
+                      et_min=600, session="rth", external=set())
+        option = side if trigger == "near_hod" else "5"
+        return _IMPL[trigger](ctx, option, {"lookback": 5})
+
+    if side == "high":
+        assert fire(99.5, 99.0, 99.5) is not None  # approach
+        assert fire(100.0, 99.0, 99.5) is not None  # touch is not a breach
+        assert fire(100.1, 99.0, 99.5) is None      # wick/rejection
+        assert fire(100.5, 99.0, 100.5) is None     # close-through
+    else:
+        assert fire(101.0, 100.5, 100.5) is not None
+        assert fire(101.0, 100.0, 100.5) is not None
+        assert fire(101.0, 99.9, 100.5) is None
+        assert fire(101.0, 99.5, 99.5) is None
+
+
 # ── VWAP support / resistance: candle size and touch tolerance unit ─────────
 
 def _vs_hits(minutes, tf, tol, unit, atr=2.0, vwap=100.0):
