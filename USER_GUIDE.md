@@ -546,6 +546,17 @@ The scanner serves everything on port **7777**:
   On connect the server sends one `{"type": "replay", "alerts": [...]}` frame with the recent alerts that
   match your filter (newest first), then one `{"type": "alert", "alert": {...}}` frame per new alert.
 
+For a custom `AND` or `AT LEAST` setup, `triggers_fired` lists **all** triggers that satisfied the
+configured window, including those from earlier bars. `trigger_evidence` is the machine-readable
+explanation: one entry per satisfying trigger with `instance_key` (parameter-distinct identity),
+`trigger`, normalized `params`, `timestamp` in Eastern time, `direction`, `value`, `note`, and
+`status` (`fired_now` or `satisfied_earlier`). An earlier trigger stays eligible until the window
+expires. Profile, session, or feed rejection does not consume that sequence; a later eligible bar
+can publish it while it remains valid. Startup replay can prime a partial sequence, but a sequence
+already completed during replay is not emitted again as a stale live alert. Consumers should use
+`trigger_evidence` to explain a multi-trigger alert and not infer the full cause from `entry_trigger`
+alone. Older archived alerts may lack this additive field.
+
 Custom setup ids are stable: renaming a setup in the dashboard changes only its display name.
 
 ---

@@ -7,6 +7,17 @@ export interface Alert {
   price: number
   trigger: string
   triggers_fired: string[]
+  /** Custom AND/AT LEAST evidence; earlier triggers can satisfy the window. */
+  trigger_evidence?: Array<{
+    instance_key: string
+    trigger: string
+    timestamp: string
+    params: Record<string, number | string | boolean>
+    direction: 'long' | 'short' | 'neutral'
+    value: number | null
+    note: string
+    status: 'fired_now' | 'satisfied_earlier'
+  }>
   score: number
   market_regime: string
   conditions: Record<string, { value: unknown; pass: boolean; status: string }>

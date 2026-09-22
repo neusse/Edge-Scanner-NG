@@ -294,6 +294,10 @@ def test_and_setup_counts_parameterized_trigger_instances_separately(tmp_path):
     st.rvol = 3.1
     alerts = ev.on_bar(st, second)
     assert len(alerts) == 1
+    evidence = alerts[0]["trigger_evidence"]
+    assert len(evidence) == 2
+    assert {item["params"]["threshold"] for item in evidence} == {1.5, 3.0}
+    assert len({item["instance_key"] for item in evidence}) == 2
 
 
 def test_and_mode_requires_all_triggers_in_window(tmp_path):
@@ -316,6 +320,63 @@ def test_external_triggers_pass_through(tmp_path, fake_plugin):
     assert len(out) == 1 and out[0]["triggers_fired"] == ["setup:X1"]
     out = ev.on_bar(st, _bar(100.1, et="2024-01-02 10:01"), {"setup:X1", "setup:X2"})
     assert set(out[0]["triggers_fired"]) == {"setup:X1", "setup:X2"}
+
+
+@pytest.mark.parametrize("mode,min_triggers", [("and", 2), ("atleast", 2)])
+def test_windowed_alert_carries_complete_timestamped_trigger_evidence(tmp_path, fake_plugin, mode, min_triggers):
+    ev = _evaluator(tmp_path, _setup("s1", [{"id": "setup:X1"}, {"id": "setup:X2"}],
+                                       mode=mode, min_triggers=min_triggers, and_window_min=5))
+    st = _state()
+    first = _bar(100.0, et="2024-01-02 10:00")
+    second = _bar(100.1, et="2024-01-02 10:01")
+    assert ev.on_bar(st, first, {"setup:X1"}) == []
+    out = ev.on_bar(st, second, {"setup:X2"})
+    assert len(out) == 1
+    assert set(out[0]["triggers_fired"]) == {"setup:X1", "setup:X2"}
+    evidence = {item["trigger"]: item for item in out[0]["trigger_evidence"]}
+    assert evidence["setup:X1"]["status"] == "satisfied_earlier"
+    assert evidence["setup:X2"]["status"] == "fired_now"
+    assert evidence["setup:X1"]["timestamp"].endswith("10:00:00-05:00")
+    assert evidence["setup:X2"]["timestamp"].endswith("10:01:00-05:00")
+    assert all(item["params"] == {} for item in evidence.values())
+
+
+def test_profile_rejection_does_not_consume_window_evidence(tmp_path, fake_plugin):
+    ev = _evaluator(tmp_path, _setup("s1", [{"id": "setup:X1"}, {"id": "setup:X2"}],
+                                       mode="and", and_window_min=5))
+    st = _state()
+    assert ev.on_bar(st, _bar(100.0, et="2024-01-02 10:00"), {"setup:X1"},
+                     defer_commit=True) == []
+    rejected = ev.on_bar(st, _bar(100.1, et="2024-01-02 10:01"), {"setup:X2"},
+                         defer_commit=True)
+    assert len(rejected) == 1
+    # The caller's profile/session/ranking gate rejects this candidate.
+    accepted = ev.on_bar(st, _bar(100.2, et="2024-01-02 10:02"), set(),
+                         defer_commit=True)
+    assert len(accepted) == 1
+    assert set(accepted[0]["triggers_fired"]) == {"setup:X1", "setup:X2"}
+    ev.accept_alert(accepted[0])
+    assert ev.on_bar(st, _bar(100.3, et="2024-01-02 10:03"), {"setup:X2"},
+                     defer_commit=True) == []
+
+
+def test_replay_primes_partial_window_without_emitting_and_retains_evidence(tmp_path, fake_plugin):
+    ev = _evaluator(tmp_path, _setup("s1", [{"id": "setup:X1"}, {"id": "setup:X2"}],
+                                       mode="and", and_window_min=5))
+    st = _state()
+    ev.prime_bar(st, _bar(100.0, et="2024-01-02 10:00"), "rth", {"setup:X1"})
+    out = ev.on_bar(st, _bar(100.1, et="2024-01-02 10:01"), {"setup:X2"})
+    assert len(out) == 1
+    assert {item["status"] for item in out[0]["trigger_evidence"]} == {"fired_now", "satisfied_earlier"}
+
+
+def test_replay_of_complete_window_does_not_announce_a_stale_alert(tmp_path, fake_plugin):
+    ev = _evaluator(tmp_path, _setup("s1", [{"id": "setup:X1"}, {"id": "setup:X2"}],
+                                       mode="and", and_window_min=5))
+    st = _state()
+    ev.prime_bar(st, _bar(100.0, et="2024-01-02 10:00"), "rth", {"setup:X1"})
+    ev.prime_bar(st, _bar(100.1, et="2024-01-02 10:01"), "rth", {"setup:X2"})
+    assert ev.on_bar(st, _bar(100.2, et="2024-01-02 10:02"), set()) == []
 
 
 def test_a_system_passthrough_trigger_is_unknown_without_the_plugin(monkeypatch):
