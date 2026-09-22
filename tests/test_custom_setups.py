@@ -172,6 +172,30 @@ def test_bearish_cross_can_report_a_long_position_exit(tmp_path):
     assert "crossed below EMA(9)" in alerts[0]["trigger_note"]
 
 
+def test_five_min_ema_uses_completed_regular_session_candles_only():
+    series = SymbolSeries("AAA")
+    for i in range(10):
+        series.on_bar({"open": 100.0, "high": 100.0, "low": 100.0,
+                       "close": 100.0, "volume": 1.0},
+                      570 + i * 5, "2024-01-02", None)
+    before = series.ema(5, 9).value
+    assert before == pytest.approx(100.0)
+    series.on_bar({"open": 200.0, "high": 200.0, "low": 200.0,
+                   "close": 200.0, "volume": 1.0}, 240, "2024-01-03", None)
+    series.on_bar({"open": 200.0, "high": 200.0, "low": 200.0,
+                   "close": 200.0, "volume": 1.0}, 245, "2024-01-03", None)
+    assert series.ema(5, 9).value == pytest.approx(before)
+
+
+def test_ema_cross_alert_reports_the_level_that_triggered_it(tmp_path):
+    ev = _evaluator(tmp_path, _setup(
+        "ema-level", [{"id": "cross_below", "options": ["ema9_5"], "params": {"tf": 1}}]))
+    state = _state(symbol="AAA")
+    alerts = _run(ev, state, [100.0 + i * 0.1 for i in range(50)] + [106.0, 99.0])
+    assert len(alerts) == 1
+    assert alerts[0]["ema9"] == pytest.approx(alerts[0]["trigger_value"])
+
+
 def test_new_candle_high_5min_once_per_candle(tmp_path):
     ev = _evaluator(tmp_path, _setup("s1", [{"id": "new_candle_high", "options": ["5"], "params": {"since": 1}}]))
     st = _state()

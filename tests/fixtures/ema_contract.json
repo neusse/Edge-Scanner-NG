@@ -1,0 +1,5 @@
+{
+  "closes": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
+  "ema9": {"first_index": 8, "first_value": 5, "last_value": 18},
+  "ema21": {"first_index": 20, "first_value": 11, "last_value": 12}
+}

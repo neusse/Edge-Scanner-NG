@@ -433,7 +433,9 @@ def main() -> None:
     # and the post-bar hook below see the same instance.
     event_buffer = EventBuffer()
     app_state.event_buffer = event_buffer
-    scanner.warmup(spy_daily, symbol_daily, sector_daily=sector_daily, bars_5m=bars_5m)
+    scanner.warmup(spy_daily, symbol_daily, sector_daily=sector_daily,
+                   bars_5m=bars_5m,
+                   session_date=pd.Timestamp.now(tz="America/New_York").date())
 
     # Load custom trigger definitions before replaying today's bars. The replay
     # can then prime edge/once memory without emitting alerts, so a mid-session

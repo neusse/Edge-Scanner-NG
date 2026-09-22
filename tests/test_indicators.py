@@ -1,4 +1,7 @@
 """Unit tests for EMA/SMA, VWAP, RVOL, and chart quality indicators."""
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -54,6 +57,24 @@ def test_ema_converges_to_flat():
     s = pd.Series([100.0] * 50, index=idx)
     out = ema(s, 8)
     assert out.iloc[-1] == pytest.approx(100.0, rel=1e-6)
+
+
+def test_daily_ema_uses_the_same_sma_seed_as_alert_emas():
+    close = pd.Series([1.0, 2.0, 3.0, 4.0], index=_daily_index(4))
+    out = ema(close, 3)
+    assert out.iloc[:2].isna().all()
+    assert out.iloc[2:].tolist() == pytest.approx([2.0, 3.0])
+
+
+@pytest.mark.parametrize("period", [9, 21])
+def test_ema_matches_shared_chart_golden_fixture(period):
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "ema_contract.json").read_text())
+    closes = pd.Series(fixture["closes"], index=_daily_index(len(fixture["closes"])))
+    expected = fixture[f"ema{period}"]
+    out = ema(closes, period)
+    assert out.iloc[:expected["first_index"]].isna().all()
+    assert out.iloc[expected["first_index"]] == pytest.approx(expected["first_value"])
+    assert out.iloc[-1] == pytest.approx(expected["last_value"])
 
 
 def test_ema_update_seeds_on_first_bar():

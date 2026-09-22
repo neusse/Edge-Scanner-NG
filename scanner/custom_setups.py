@@ -644,6 +644,7 @@ class CustomEvaluator:
     def _build_alert(self, state: Any, bar: dict, et: pd.Timestamp, s: dict, key: str, f: Fire,
                      all_keys: list[str], sess: str) -> dict:
         from scanner.stops import compute_stop   # local import: keeps module import order simple
+        series = self.series(state.symbol)
         price = float(bar["close"])
         direction = s.get("alert_direction") or (
             f.direction if f.direction in ("long", "short") else (
@@ -678,8 +679,9 @@ class CustomEvaluator:
             "market_regime": "neutral",
             "conditions": {},
             "vwap": _f(getattr(state, "vwap", None)),
-            "ema3": _f(getattr(state, "ema_3", None)),
-            "ema9": _f(getattr(state, "ema_9", None)),
+            "ema3": _f(series.ema(5, 3).value),
+            "ema9": _f(series.ema(5, 9).value),
+            "ema21": _f(series.ema(5, 21).value),
             "pct_change": (price / state.prior_close - 1.0) if getattr(state, "prior_close", None) else None,
             "rvol": rvol,
             # system-feed payload fields

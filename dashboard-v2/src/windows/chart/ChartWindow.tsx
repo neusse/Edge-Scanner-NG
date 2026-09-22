@@ -8,7 +8,7 @@ import {
 import type { Bar, ChartConfig, ChartOverlays, ChartTimeframe } from '../../types'
 import { api } from '../../lib/api'
 import { toSecET, isExtended, etDate } from '../../lib/time'
-import { calcEMA, calcSMA, pmHighLow, priorDayHL, type Pt } from '../../lib/chartMath'
+import { calcEMA, calcSMA, completedIntradayBars, pmHighLow, priorDayHL, type Pt } from '../../lib/chartMath'
 import { readChartPalette, THEME_EVENT, type ChartPalette } from '../../lib/theme'
 import { useLinkedSymbol, useLinkedAlert, linkSymbol } from '../../stores/linkStore'
 import { useSetups } from '../../stores/setupsStore'
@@ -184,10 +184,12 @@ export function ChartWindow({ win }: { win: ChartConfig }) {
       s.setData(on ? data().map(p => ({ time: p.time as UTCTimestamp, value: p.value })) : [])
     }
     const rth = session ? visibleBars.filter(b => !isExtended(b.t)) : visibleBars
+    const tfMinutes: Partial<Record<ChartTimeframe, number>> = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1H': 60, '4H': 240 }
+    const emaBars = tfMinutes[tf] ? completedIntradayBars(rth, tfMinutes[tf]) : rth
     // VWAP is the level the engine gates on: solid, 2px, labelled on the axis, restarts each day.
     setLine('vwap', o.vwap && session, pal.vwap, () => calcSessionVWAP(rth), 2, LineStyle.Solid, 'VWAP')
-    setLine('ema9', o.ema9, pal.ema9, () => calcEMA(visibleBars, 9, toSecET), 1, LineStyle.Solid, '9')
-    setLine('ema21', o.ema21, pal.ema21, () => calcEMA(visibleBars, 21, toSecET), 1, LineStyle.Solid, '21')
+    setLine('ema9', o.ema9, pal.ema9, () => calcEMA(emaBars, 9, toSecET), 1, LineStyle.Solid, '9')
+    setLine('ema21', o.ema21, pal.ema21, () => calcEMA(emaBars, 21, toSecET), 1, LineStyle.Solid, '21')
     // SMAs are period-based on the chart's own bars (SMA200 on 5m = 200 five-minute
     // bars, on 1D = 200 sessions), so intraday frames carry several days of history.
     setLine('sma50', o.sma50, pal.sma50, () => calcSMA(visibleBars, 50, toSecET), 1, LineStyle.Solid, '50')
