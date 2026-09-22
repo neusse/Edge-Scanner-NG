@@ -42,7 +42,8 @@ from scanner.conditions import (
 )
 from scanner.json_store import _read_json, _write_json_atomic, sanitize_id
 from scanner.trigger_catalog import (
-    BY_ID, EvalCtx, Fire, SymbolSeries, describe, et_minutes, evaluate, n_day_level, trigger_key,
+    BY_ID, EvalCtx, Fire, SymbolSeries, describe, et_minutes, evaluate, n_day_latch_key,
+    n_day_level, trigger_key,
 )
 
 log = logging.getLogger(__name__)
@@ -664,6 +665,7 @@ class CustomEvaluator:
                 k = trigger_key(t["id"], o)
                 ev = last.get(k) or {}
                 level = None
+                state_note = None
                 try:
                     if t["id"] in ("cross_above", "cross_below") or t["id"] == "back_to_ema":
                         level = ctx.level(o if not o.startswith("ema") or "_" in o else o)
@@ -678,7 +680,10 @@ class CustomEvaluator:
                     elif t["id"] in ("break_recent_low", "near_last_low", "reject_last_low"):
                         level = series.swing(int(o), int((t.get("params") or {}).get("lookback", 5)), "low")
                     elif t["id"] == "hi_lo_60d":
-                        level = n_day_level(series, state, int((t.get("params") or {}).get("days", 60)), o)
+                        days = int((t.get("params") or {}).get("days", 60))
+                        level = n_day_level(series, state, days, o)
+                        if series.mem.get(n_day_latch_key(days, o)):
+                            state_note = f"already alerted for the {o} side this trading day"
                     elif t["id"] == "hi_lo_52w":
                         level = series.daily.get("hi_52w" if o == "high" else "lo_52w")
                 except Exception:
@@ -686,7 +691,8 @@ class CustomEvaluator:
                 rows.append({
                     "key": k, "label": describe(t["id"], o, t.get("params") or {}),
                     "source": tdef.source if tdef else "native",
-                    "fired_last_bar": bool(ev.get("fired")), "value": ev.get("value"), "note": ev.get("note"),
+                    "fired_last_bar": bool(ev.get("fired")), "value": ev.get("value"),
+                    "note": ev.get("note") or state_note,
                     "level": level, "last_eval": ev.get("ts"),
                     "fires_today": self._stats.get(setup["id"], {}).get(k, 0),
                 })

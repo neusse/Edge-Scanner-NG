@@ -806,6 +806,33 @@ def _nday(ctx, days, opt="high"):
     return _IMPL["hi_lo_60d"](ctx, opt, {"days": days})
 
 
+def _nday_seeded_series(highs, lows=None):
+    from types import SimpleNamespace
+
+    lows = lows or [h - 10 for h in highs]
+    idx = pd.date_range("2026-06-01", periods=len(highs), freq="B", tz="UTC")
+    daily = pd.DataFrame({
+        "open": highs,
+        "high": highs,
+        "low": lows,
+        "close": highs,
+        "volume": 1e6,
+    }, index=idx)
+    series = SymbolSeries("X")
+    series.seed_daily(daily)
+    return series, SimpleNamespace(symbol="X")
+
+
+def _nday_on_bar(series, state, *, day, minute, high, low, close, days, side):
+    from scanner.trigger_catalog import EvalCtx
+
+    bar = {"open": close, "high": high, "low": low, "close": close, "volume": 1}
+    session = series.on_bar(bar, minute, day, None)
+    ctx = EvalCtx(state=state, series=series, bar=bar, et_min=minute,
+                  session=session, external=set())
+    return _nday(ctx, days, side)
+
+
 def test_n_day_high_uses_the_number_of_sessions_asked_for():
     ctx = _nday_ctx(60, close=105.0, prev_close=103.5)
     f = _nday(ctx, 20)
@@ -823,6 +850,82 @@ def test_n_day_does_not_fire_without_enough_history():
 def test_saved_60_day_setups_keep_60_days():
     got = normalize_setup(_setup("s1", [{"id": "hi_lo_60d", "options": ["high"]}]))
     assert got["triggers"][0]["params"] == {"days": 60.0}
+
+
+def test_n_day_alert_fires_on_first_strict_extreme_only_for_each_side():
+    series, state = _nday_seeded_series([99.0, 100.0, 101.0], [91.0, 90.0, 92.0])
+    day = "2026-09-14"
+
+    # Equality is not a new extreme.
+    assert _nday_on_bar(series, state, day=day, minute=570, high=101.0, low=95.0,
+                        close=100.0, days=3, side="high") is None
+
+    # The first traded high beyond the completed-session level fires even if the
+    # one-minute close retreats below that level.
+    high = _nday_on_bar(series, state, day=day, minute=571, high=101.25, low=95.0,
+                        close=100.5, days=3, side="high")
+    assert high is not None and high.direction == "long" and high.value == 101.0
+
+    # A retreat/re-cross and a later HOD are ordinary intraday action, not new
+    # N-day events. The high side stays latched for the session.
+    assert _nday_on_bar(series, state, day=day, minute=572, high=100.8, low=94.0,
+                        close=100.0, days=3, side="high") is None
+    assert _nday_on_bar(series, state, day=day, minute=573, high=102.0, low=94.0,
+                        close=101.5, days=3, side="high") is None
+
+    # The opposite side has its own latch and may still report a true N-day low.
+    low = _nday_on_bar(series, state, day=day, minute=574, high=101.0, low=89.75,
+                       close=90.5, days=3, side="low")
+    assert low is not None and low.direction == "short" and low.value == 90.0
+    assert _nday_on_bar(series, state, day=day, minute=575, high=101.0, low=89.0,
+                        close=90.0, days=3, side="low") is None
+
+
+def test_n_day_seeded_session_breach_suppresses_late_restart_alert():
+    series, state = _nday_seeded_series([99.0, 100.0, 101.0])
+    day = "2026-09-14"
+
+    # These bars model startup seeding: the series advances, but triggers are not
+    # evaluated. The historical level was already breached while the scanner was
+    # offline or before the restart completed.
+    for minute, high in ((570, 100.5), (571, 101.5)):
+        bar = {"open": 100.0, "high": high, "low": 99.0, "close": 100.0, "volume": 1}
+        series.on_bar(bar, minute, day, None)
+
+    # Even another HOD after startup must not create a late/duplicate N-day alert.
+    assert _nday_on_bar(series, state, day=day, minute=572, high=102.0, low=99.0,
+                        close=101.5, days=3, side="high") is None
+
+
+def test_n_day_rolls_completed_session_into_next_day_reference():
+    series, state = _nday_seeded_series([100.0, 101.0], [90.0, 91.0])
+
+    first = _nday_on_bar(series, state, day="2026-09-14", minute=570,
+                         high=102.0, low=95.0, close=101.0, days=2, side="high")
+    assert first is not None and first.value == 101.0
+
+    # The date change resets the latch and rolls Sep 14's completed HOD into the
+    # two-session reference. 101.5 is therefore not a new two-day high.
+    assert _nday_on_bar(series, state, day="2026-09-15", minute=570,
+                        high=101.5, low=96.0, close=101.0, days=2, side="high") is None
+    second = _nday_on_bar(series, state, day="2026-09-15", minute=571,
+                          high=102.25, low=96.0, close=102.0, days=2, side="high")
+    assert second is not None and second.value == 102.0
+
+
+def test_n_day_stock_check_explains_the_daily_latch(tmp_path):
+    from scanner.trigger_catalog import n_day_latch_key
+
+    setup = _setup("s1", [{"id": "hi_lo_60d", "options": ["high"], "params": {"days": 3}}])
+    ev = _evaluator(tmp_path, setup)
+    state = _state(symbol="X")
+    series = ev.series("X")
+    series.daily_highs = [99.0, 100.0, 101.0]
+    series.mem[n_day_latch_key(3, "high")] = True
+
+    row = ev.check(ev.store.get("s1"), state)["triggers"][0]
+    assert row["level"] == 101.0
+    assert row["note"] == "already alerted for the high side this trading day"
 
 
 # ── VWAP support / resistance: candle size and touch tolerance unit ─────────
