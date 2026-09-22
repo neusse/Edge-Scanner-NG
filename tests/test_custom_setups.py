@@ -1253,6 +1253,69 @@ def test_vwap_touch_band_is_bounded_on_both_sides(trigger, prior, candidate, exp
     assert _vs_hits([prior, candidate, candidate], 1, 0.1, 0, trigger=trigger) == expected
 
 
+@pytest.mark.parametrize("closes,away_extremes,side", [
+    ([100, 104, 108, 112, 116], [110, 114], "long"),
+    ([116, 112, 108, 104, 100], [106, 102], "short"),
+])
+def test_back_to_ema_uses_ema_at_each_historical_candle(closes, away_extremes, side):
+    from types import SimpleNamespace
+    from scanner.trigger_catalog import EvalCtx, _IMPL
+
+    series = SymbolSeries("X")
+    for i, close in enumerate(closes):
+        bar = {"open": close, "high": close + 1, "low": close - 1,
+               "close": close, "volume": 1}
+        if i >= 3:
+            bar["low" if side == "long" else "high"] = away_extremes[i - 3]
+        series.on_bar(bar, 570 + 5 * i, "2026-09-15", None)
+    series.on_bar({"open": closes[-1], "high": closes[-1] + 1,
+                   "low": closes[-1] - 1, "close": closes[-1], "volume": 1},
+                  595, "2026-09-15", None)
+    current_ema = series.ema(5, 3).value
+    assert current_ema is not None
+    touch = {"open": current_ema, "high": current_ema + 1,
+             "low": current_ema - 1, "close": current_ema, "volume": 1}
+    ctx = EvalCtx(state=SimpleNamespace(symbol="X"), series=series, bar=touch,
+                  et_min=595, session="rth", external=set())
+    fired = _IMPL["back_to_ema"](ctx, "ema3_5", {"away_candles": 2, "away_pct": 1})
+    assert fired is not None and fired.direction == side and fired.value == pytest.approx(current_ema)
+
+    series.mem.clear()
+    failed_hold = dict(touch)
+    failed_hold["close"] = current_ema - 2 if side == "long" else current_ema + 2
+    rejected = EvalCtx(state=ctx.state, series=series, bar=failed_hold,
+                       et_min=595, session="rth", external=set())
+    assert _IMPL["back_to_ema"](rejected, "ema3_5", {"away_candles": 2, "away_pct": 1}) is None
+
+
+def test_back_to_ema_fails_closed_without_warm_ema_history():
+    from types import SimpleNamespace
+    from scanner.trigger_catalog import EvalCtx, _IMPL
+
+    series = SymbolSeries("X")
+    for minute in (570, 575, 580):
+        series.on_bar({"open": 100, "high": 101, "low": 99, "close": 100, "volume": 1},
+                      minute, "2026-09-15", None)
+    ctx = EvalCtx(state=SimpleNamespace(symbol="X"), series=series,
+                  bar={"open": 100, "high": 101, "low": 99, "close": 100, "volume": 1},
+                  et_min=580, session="rth", external=set())
+    assert _IMPL["back_to_ema"](ctx, "ema3_5", {"away_candles": 2, "away_pct": 1}) is None
+
+
+def test_flat_ema_without_away_period_does_not_fire_back_to_ema():
+    from types import SimpleNamespace
+    from scanner.trigger_catalog import EvalCtx, _IMPL
+
+    series = SymbolSeries("X")
+    for minute in range(570, 600, 5):
+        series.on_bar({"open": 100, "high": 100.5, "low": 99.5, "close": 100, "volume": 1},
+                      minute, "2026-09-15", None)
+    ctx = EvalCtx(state=SimpleNamespace(symbol="X"), series=series,
+                  bar={"open": 100, "high": 100.5, "low": 99.5, "close": 100, "volume": 1},
+                  et_min=595, session="rth", external=set())
+    assert _IMPL["back_to_ema"](ctx, "ema3_5", {"away_candles": 2, "away_pct": 1}) is None
+
+
 def test_new_vwap_alerts_default_to_3_min_and_atr():
     got = normalize_setup(_setup("s1", [{"id": "vwap_support"}]))["triggers"][0]
     assert got["options"] == ["3"] and got["params"] == {"tol_pct": 3.0, "tol_unit": 1.0}
