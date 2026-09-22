@@ -420,7 +420,7 @@ class CustomEvaluator:
         self._plan: _Plan = _compile(self.store.load_all())
         self._last_fire: dict[tuple[str, str], float] = {}          # (setup, symbol) -> epoch of last alert
         self._last_trig: dict[tuple[str, str, str], float] = {}     # (setup, symbol, key) -> epoch
-        self._and_seen: dict[tuple[str, str], dict[str, float]] = {}
+        self._and_seen: dict[tuple[str, str], dict[str, dict]] = {}
         self._stats: dict[str, dict[str, int]] = {}                  # setup -> {trigger key: fires}
         self._last_eval: dict[str, dict[str, dict]] = {}             # symbol -> {key: {fired, value, note, ts}}
         self._since = pd.Timestamp.utcnow().isoformat()
@@ -501,6 +501,7 @@ class CustomEvaluator:
             external=external or set(),
             spy_mom_15m=spy_mom_15m,
         )
+        primed_fires: dict[str, Fire] = {}
         for (tid, opt), users in plan.keys.items():
             primed: set[str] = set()
             for setup_index, tcfg in users:
@@ -511,14 +512,51 @@ class CustomEvaluator:
                     continue
                 primed.add(pkey)
                 try:
-                    evaluate(tid, ctx, opt, tcfg.get("params") or {})
+                    fire = evaluate(tid, ctx, opt, tcfg.get("params") or {})
+                    if fire is not None:
+                        primed_fires[_trigger_instance_key(tid, opt, tcfg.get("params"))] = fire
                 except Exception as exc:
                     log.debug("trigger %s:%s prime failed for %s: %s",
                               tid, opt, state.symbol, exc)
+        now = ts.timestamp()
+        for setup in plan.setups:
+            if setup["mode"] not in ("and", "atleast") or session not in setup.get("sessions", ["rth"]):
+                continue
+            seen = self._and_seen.setdefault((setup["id"], state.symbol), {})
+            need = {
+                _trigger_instance_key(trigger["id"], option, trigger.get("params"))
+                for trigger in setup["triggers"] for option in (trigger.get("options") or [""])
+            }
+            for trigger in setup["triggers"]:
+                for option in (trigger.get("options") or [""]):
+                    key = _trigger_instance_key(trigger["id"], option, trigger.get("params"))
+                    fire = primed_fires.get(key)
+                    if fire is None or (setup["direction"] != "all" and fire.direction not in (setup["direction"], "neutral")):
+                        continue
+                    seen[key] = {
+                        "instance_key": key, "trigger": trigger_key(trigger["id"], option),
+                        "timestamp": et.isoformat(), "params": dict(trigger.get("params") or {}),
+                        "direction": fire.direction, "value": fire.value, "note": fire.note,
+                        "status": "satisfied_earlier",
+                    }
+            window = setup.get("and_window_min", 5) * 60
+            for key in list(seen):
+                if pd.Timestamp(seen[key]["timestamp"]).timestamp() < now - window:
+                    del seen[key]
+            want = len(need) if setup["mode"] == "and" else min(
+                max(1, int(setup.get("min_triggers", 2))), len(need))
+            if sum(key in seen for key in need) >= want:
+                # A complete historical sequence was missed during replay. Do
+                # not publish it when live processing resumes.
+                self._last_fire[(setup["id"], state.symbol)] = now
+                for key in seen:
+                    self._last_trig[(setup["id"], state.symbol, key)] = now
+                seen.clear()
 
     # ── per bar ──
     def on_bar(self, state: Any, bar: dict, external: Optional[set[str]] = None,
-               spy_mom_15m: Optional[float] = None, session: Optional[str] = None) -> list[dict]:
+               spy_mom_15m: Optional[float] = None, session: Optional[str] = None,
+               defer_commit: bool = False) -> list[dict]:
         """
         Args:
             session: the session tag from an already-updated shared series.
@@ -569,9 +607,6 @@ class CustomEvaluator:
                     fires[k] = f
         if snap:
             self._last_eval[sym] = snap
-        if not fires:
-            return []
-
         now = ts.timestamp()
         out: list[dict] = []
         for i, s in enumerate(plan.setups):
@@ -596,49 +631,84 @@ class CustomEvaluator:
                                                f"(don't repeat for {rep}s)"])
                         continue
                     fired_here.append((instance_key, display_key, t, f))
-            if not fired_here:
+            if not fired_here and (s["mode"] == "or" or not self._and_seen.get((s["id"], sym))):
                 continue
+            current_evidence = {
+                instance_key: {
+                    "instance_key": instance_key,
+                    "trigger": display_key,
+                    "timestamp": et.isoformat(),
+                    "params": dict(tcfg.get("params") or {}),
+                    "direction": fire.direction,
+                    "value": fire.value,
+                    "note": fire.note,
+                    "status": "fired_now",
+                }
+                for instance_key, display_key, tcfg, fire in fired_here
+            }
+            evidence = current_evidence
             if s["mode"] in ("and", "atleast"):
                 seen = self._and_seen.setdefault((s["id"], sym), {})
-                for instance_key, _, _, _ in fired_here:
-                    seen[instance_key] = now
+                seen.update(current_evidence)
                 window = s.get("and_window_min", 5) * 60
+                for instance_key in list(seen):
+                    if pd.Timestamp(seen[instance_key]["timestamp"]).timestamp() < now - window:
+                        del seen[instance_key]
                 need = {
                     _trigger_instance_key(t["id"], o, t.get("params"))
                     for t in s["triggers"] for o in (t.get("options") or [""])
                 }
-                have = sum(1 for k in need if seen.get(k, -1e18) >= now - window)
+                have = sum(1 for k in need if k in seen)
                 # AND is "atleast" with the count pinned to every alert, so one
                 # branch serves both and they cannot drift apart.
                 want = len(need) if s["mode"] == "and" else min(
                     max(1, int(s.get("min_triggers", 2))), len(need))
                 if have < want:
-                    if self.activity is not None:
+                    if self.activity is not None and fired_here:
                         self.activity.add(sym, ts, "custom", s["id"], fired_here[0][3].direction,
                                           "waiting", ", ".join(k for _, k, _, _ in fired_here),
                                           [f"{have} of {want} alerts within "
                                            f"{s.get('and_window_min', 5):g} min"])
                     continue
-                self._and_seen[(s["id"], sym)] = {}
+                evidence = {
+                    key: {**item, "status": "fired_now" if key in current_evidence else "satisfied_earlier"}
+                    for key, item in seen.items() if key in need
+                }
             rep_s = int(s.get("repeat_sec") or 0)
             last_s = self._last_fire.get((s["id"], sym))
             if rep_s and last_s is not None and now - last_s < rep_s:
-                if self.activity is not None:
+                if self.activity is not None and fired_here:
                     self.activity.add(sym, ts, "custom", s["id"], fired_here[0][3].direction, "repeat",
                                       ", ".join(k for _, k, _, _ in fired_here),
                                       [f"setup fired {int(now - last_s)}s ago (don't repeat for {rep_s}s)"])
                 continue
-            self._last_fire[(s["id"], sym)] = now
-            for instance_key, _, _, _ in fired_here:
-                self._last_trig[(s["id"], sym, instance_key)] = now
-                counts = self._stats.setdefault(s["id"], {})
-                counts[instance_key] = counts.get(instance_key, 0) + 1
             # one alert per setup per bar; the strongest note goes first
-            _, k0, _, f0 = fired_here[0]
-            out.append(self._build_alert(
+            if fired_here:
+                _, k0, _, f0 = fired_here[0]
+            else:
+                latest = max(evidence.values(), key=lambda item: item["timestamp"])
+                k0 = latest["trigger"]
+                f0 = Fire(latest["direction"], latest["value"], latest["note"])
+            alert = self._build_alert(
                 state, bar, et, s, k0, f0,
-                [display_key for _, display_key, _, _ in fired_here], sess))
+                [item["trigger"] for item in evidence.values()], sess)
+            alert["trigger_evidence"] = list(evidence.values())
+            out.append(alert)
+            if not defer_commit:
+                self.accept_alert(alert)
         return out
+
+    def accept_alert(self, alert: dict) -> None:
+        """Commit latches only after downstream gates actually accept an alert."""
+        setup_id, symbol = alert["setup"], alert["symbol"]
+        now = pd.Timestamp(alert["timestamp"]).timestamp()
+        self._last_fire[(setup_id, symbol)] = now
+        for item in alert.get("trigger_evidence", []):
+            instance_key = item["instance_key"]
+            self._last_trig[(setup_id, symbol, instance_key)] = now
+            counts = self._stats.setdefault(setup_id, {})
+            counts[instance_key] = counts.get(instance_key, 0) + 1
+        self._and_seen.pop((setup_id, symbol), None)
 
     # ── alert ──
     def _build_alert(self, state: Any, bar: dict, et: pd.Timestamp, s: dict, key: str, f: Fire,

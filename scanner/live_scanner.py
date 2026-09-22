@@ -733,10 +733,11 @@ class LiveScanner:
             try:
                 spy_mom15 = self._spy_state.mom_15m_pct if self._spy_state is not None else None
                 for alert in self._custom_evaluator.on_bar(state, bar, ext_fired, spy_mom15,
-                                                           session=session):
+                                                           session=session, defer_commit=True):
                     if not self._passes_profile(alert, state, bar, session, pcache, "custom"):
                         continue
                     if self._record_push(self._custom_sink.push(alert), alert, "custom", alert["setup"]):
+                        self._custom_evaluator.accept_alert(alert)
                         log.info("CS ALERT  %-6s  %-5s  %-18s  %s  price=%.2f",
                                  alert["symbol"], alert["direction"], alert["setup"],
                                  alert.get("trigger_note") or alert.get("entry_trigger"), alert["price"])
