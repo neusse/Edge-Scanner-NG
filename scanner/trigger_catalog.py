@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import math
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
 import pandas as pd
@@ -404,7 +404,36 @@ def _build_catalog() -> list[TriggerDef]:
     return cat
 
 
-CATALOG: list[TriggerDef] = _build_catalog()
+EVENT_LIFETIMES: dict[str, str] = {
+    "hod": "new_extreme", "hod_ext": "new_extreme", "near_hod": "approach_edge",
+    "hi_lo_60d": "first_breach_per_day", "hi_lo_52w": "first_breach_per_day",
+    "prior_day_break": "first_breach_per_day", "pm_break": "first_breach_per_day",
+    "new_candle_high": "once_per_candle", "new_candle_low": "once_per_candle",
+    "break_recent_high": "once_per_candle", "break_recent_low": "once_per_candle",
+    "near_last_high": "approach_edge", "near_last_low": "approach_edge",
+    "reject_last_high": "completed_candle", "reject_last_low": "completed_candle",
+    "orb_breakout": "once_per_day", "orb_breakdown": "once_per_day",
+    "bull_candle_close": "completed_candle", "bear_candle_close": "completed_candle",
+    "bull_engulfing": "completed_candle", "bear_engulfing": "completed_candle",
+    "bull_harami": "completed_candle", "bear_harami": "completed_candle",
+    "doji": "completed_candle", "inside_bar": "completed_candle",
+    "double_inside_bar": "completed_candle", "upper_shadow": "completed_candle",
+    "lower_shadow": "completed_candle", "volume_spike": "completed_candle",
+    "consec_candles": "streak_edge", "cross_above": "recross",
+    "cross_below": "recross", "vwap_v": "completed_candle",
+    "range_break": "range_exit_edge", "ema_cross_ema": "recross",
+    "through_vwap": "recross", "vwap_support": "completed_candle",
+    "vwap_resistance": "completed_candle", "back_to_ema": "once_per_candle",
+    "running": "qualifying_bar", "pct_change": "recross",
+    "gap": "once_per_day", "rvol_cross": "recross",
+    "rs_spy": "recross", "momentum_burst": "qualifying_bar",
+}
+
+
+CATALOG: list[TriggerDef] = [
+    replace(trigger, lifetime=EVENT_LIFETIMES[trigger.id] if trigger.source == "native" else "upstream_setup")
+    for trigger in _build_catalog()
+]
 BY_ID: dict[str, TriggerDef] = {t.id: t for t in CATALOG}
 
 
@@ -549,6 +578,16 @@ class SymbolSeries:
     def on_bar(self, bar: dict, et_min: int, day: str, vwap: Optional[float]) -> str:
         """Append a 1-min bar. Returns the session tag."""
         if day != self.session_date:
+            # Close yesterday's unfinished higher-timeframe candles into
+            # history without presenting them as *today's* completion event.
+            for tf in (5, 15, 30, 60):
+                prior = self.partial[tf]
+                if prior is not None:
+                    self.candles[tf].append(prior)
+                    for (etf, period), tracker in self.emas.items():
+                        if etf == tf and prior["session"] == "rth":
+                            prior.setdefault("ema_at_close", {})[period] = tracker.push(prior["close"])
+                    self.partial[tf] = None
             # Carry the completed live session into the rolling daily reference.
             # The initial startup transition has no day extrema, so it cannot
             # duplicate the history loaded by seed_daily().
@@ -1255,7 +1294,7 @@ def _t_dinside(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     tf = int(opt)
     if not c.series.completed[tf]:
         return None
-    cs = c.series.last_completed(tf, 3)
+    cs = _session_completed(c, tf, 3)
     if len(cs) < 3:
         return None
     a, b, d = cs
