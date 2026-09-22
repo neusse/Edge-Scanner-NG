@@ -345,6 +345,15 @@ class _Plan:
     emas: set[tuple[int, int]] = field(default_factory=set)
 
 
+def _trigger_instance_key(tid: str, opt: str, params: Optional[dict] = None) -> str:
+    """Stable identity for one configured trigger, including its parameters."""
+    base = trigger_key(tid, opt)
+    if not params:
+        return base
+    encoded = json.dumps(params, sort_keys=True, separators=(",", ":"))
+    return f"{base}|{encoded}"
+
+
 def _compile(setups: list[dict]) -> _Plan:
     plan = _Plan(setups=[s for s in setups if s.get("enabled", True) and s.get("triggers")])
     for i, s in enumerate(plan.setups):
@@ -487,7 +496,7 @@ class CustomEvaluator:
             return []
         ctx = EvalCtx(state=state, series=series, bar=bar, et_min=em, session=sess,
                       external=external or set(), spy_mom_15m=spy_mom_15m)
-        fires: dict[tuple[str, str], Fire] = {}
+        fires: dict[str, Fire] = {}
         snap: dict[str, dict] = {}
         for (tid, opt), users in plan.keys.items():
             # every user of this key shares params only when identical; evaluate per distinct params
@@ -502,10 +511,10 @@ class CustomEvaluator:
                     log.debug("trigger %s:%s failed for %s: %s", tid, opt, sym, exc)
                     f = None
                 done[pkey] = f
-                k = trigger_key(tid, opt)
+                k = _trigger_instance_key(tid, opt, tcfg.get("params"))
                 snap[k] = {"fired": bool(f), "value": f.value if f else None, "note": f.note if f else "", "ts": et.isoformat()}
                 if f is not None:
-                    fires[(tid, opt + "|" + pkey)] = f
+                    fires[k] = f
         if snap:
             self._last_eval[sym] = snap
         if not fires:
@@ -516,33 +525,36 @@ class CustomEvaluator:
         for i, s in enumerate(plan.setups):
             if sess not in s.get("sessions", ["rth"]):
                 continue
-            fired_here: list[tuple[str, dict, Fire]] = []
+            fired_here: list[tuple[str, str, dict, Fire]] = []
             for t in s["triggers"]:
-                pkey = json.dumps(t.get("params") or {}, sort_keys=True)
                 for o in (t.get("options") or [""]):
-                    f = fires.get((t["id"], o + "|" + pkey))
+                    instance_key = _trigger_instance_key(t["id"], o, t.get("params"))
+                    f = fires.get(instance_key)
                     if f is None:
                         continue
                     if s["direction"] != "all" and f.direction not in (s["direction"], "neutral"):
                         continue
-                    k = trigger_key(t["id"], o)
+                    display_key = trigger_key(t["id"], o)
                     rep = int(t.get("repeat_sec") or 0)
-                    last = self._last_trig.get((s["id"], sym, k))
+                    last = self._last_trig.get((s["id"], sym, instance_key))
                     if rep and last is not None and now - last < rep:
                         if self.activity is not None:
-                            self.activity.add(sym, ts, "custom", s["id"], f.direction, "repeat", k,
+                            self.activity.add(sym, ts, "custom", s["id"], f.direction, "repeat", display_key,
                                               [f"this alert fired {int(now - last)}s ago "
                                                f"(don't repeat for {rep}s)"])
                         continue
-                    fired_here.append((k, t, f))
+                    fired_here.append((instance_key, display_key, t, f))
             if not fired_here:
                 continue
             if s["mode"] in ("and", "atleast"):
                 seen = self._and_seen.setdefault((s["id"], sym), {})
-                for k, _, _ in fired_here:
-                    seen[k] = now
+                for instance_key, _, _, _ in fired_here:
+                    seen[instance_key] = now
                 window = s.get("and_window_min", 5) * 60
-                need = {trigger_key(t["id"], o) for t in s["triggers"] for o in (t.get("options") or [""])}
+                need = {
+                    _trigger_instance_key(t["id"], o, t.get("params"))
+                    for t in s["triggers"] for o in (t.get("options") or [""])
+                }
                 have = sum(1 for k in need if seen.get(k, -1e18) >= now - window)
                 # AND is "atleast" with the count pinned to every alert, so one
                 # branch serves both and they cannot drift apart.
@@ -550,8 +562,8 @@ class CustomEvaluator:
                     max(1, int(s.get("min_triggers", 2))), len(need))
                 if have < want:
                     if self.activity is not None:
-                        self.activity.add(sym, ts, "custom", s["id"], fired_here[0][2].direction,
-                                          "waiting", ", ".join(k for k, _, _ in fired_here),
+                        self.activity.add(sym, ts, "custom", s["id"], fired_here[0][3].direction,
+                                          "waiting", ", ".join(k for _, k, _, _ in fired_here),
                                           [f"{have} of {want} alerts within "
                                            f"{s.get('and_window_min', 5):g} min"])
                     continue
@@ -560,17 +572,20 @@ class CustomEvaluator:
             last_s = self._last_fire.get((s["id"], sym))
             if rep_s and last_s is not None and now - last_s < rep_s:
                 if self.activity is not None:
-                    self.activity.add(sym, ts, "custom", s["id"], fired_here[0][2].direction, "repeat",
-                                      ", ".join(k for k, _, _ in fired_here),
+                    self.activity.add(sym, ts, "custom", s["id"], fired_here[0][3].direction, "repeat",
+                                      ", ".join(k for _, k, _, _ in fired_here),
                                       [f"setup fired {int(now - last_s)}s ago (don't repeat for {rep_s}s)"])
                 continue
             self._last_fire[(s["id"], sym)] = now
-            for k, t, f in fired_here:
-                self._last_trig[(s["id"], sym, k)] = now
-                self._stats.setdefault(s["id"], {})[k] = self._stats.setdefault(s["id"], {}).get(k, 0) + 1
+            for instance_key, _, _, _ in fired_here:
+                self._last_trig[(s["id"], sym, instance_key)] = now
+                counts = self._stats.setdefault(s["id"], {})
+                counts[instance_key] = counts.get(instance_key, 0) + 1
             # one alert per setup per bar; the strongest note goes first
-            k0, t0, f0 = fired_here[0]
-            out.append(self._build_alert(state, bar, et, s, k0, f0, [k for k, _, _ in fired_here], sess))
+            _, k0, _, f0 = fired_here[0]
+            out.append(self._build_alert(
+                state, bar, et, s, k0, f0,
+                [display_key for _, display_key, _, _ in fired_here], sess))
         return out
 
     # ── alert ──
@@ -657,13 +672,19 @@ class CustomEvaluator:
         series = self.series(sym)
         last = self._last_eval.get(sym, {})
         rows: list[dict] = []
+        display_counts: dict[str, int] = {}
+        for configured in setup.get("triggers", []):
+            for configured_option in (configured.get("options") or [""]):
+                display = trigger_key(configured["id"], configured_option)
+                display_counts[display] = display_counts.get(display, 0) + 1
         ctx = EvalCtx(state=state, series=series, bar={"open": 0, "high": 0, "low": 0, "close": _f(getattr(state, "_last_close", None)) or 0},
                       et_min=0, session="rth", external=set())
         for t in setup.get("triggers", []):
             tdef = BY_ID.get(t["id"])
             for o in (t.get("options") or [""]):
-                k = trigger_key(t["id"], o)
-                ev = last.get(k) or {}
+                display_key = trigger_key(t["id"], o)
+                instance_key = _trigger_instance_key(t["id"], o, t.get("params"))
+                ev = last.get(instance_key) or {}
                 level = None
                 state_note = None
                 try:
@@ -689,12 +710,13 @@ class CustomEvaluator:
                 except Exception:
                     level = None
                 rows.append({
-                    "key": k, "label": describe(t["id"], o, t.get("params") or {}),
+                    "key": (instance_key if display_counts[display_key] > 1 else display_key),
+                    "label": describe(t["id"], o, t.get("params") or {}),
                     "source": tdef.source if tdef else "native",
                     "fired_last_bar": bool(ev.get("fired")), "value": ev.get("value"),
                     "note": ev.get("note") or state_note,
                     "level": level, "last_eval": ev.get("ts"),
-                    "fires_today": self._stats.get(setup["id"], {}).get(k, 0),
+                    "fires_today": self._stats.get(setup["id"], {}).get(instance_key, 0),
                 })
         return {
             "symbol": sym,

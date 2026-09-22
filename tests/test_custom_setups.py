@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -164,6 +165,47 @@ def test_running_up_and_repeat_seconds(tmp_path):
     alerts = _run(ev, st, [100.0, 100.6, 101.3, 101.2, 102.0])   # +0.6%, +0.7%, -, +0.8%
     # 2nd fire at 09:32 is inside the 180 s repeat window of 09:31; 09:34 is 180 s later -> allowed
     assert [a["price"] for a in alerts] == [100.6, 102.0]
+
+
+def test_rvol_thresholds_have_independent_edge_state(tmp_path):
+    ev = _evaluator(
+        tmp_path,
+        _setup("low-rvol", [{"id": "rvol_cross", "params": {"threshold": 1.5}}]),
+        _setup("high-rvol", [{"id": "rvol_cross", "params": {"threshold": 3.0}}]),
+    )
+    st = SimpleNamespace(symbol="AAPL", rvol=None)
+    alerts = []
+    for et, rvol in (("2024-01-02 09:30", 2.0), ("2024-01-02 09:31", 3.1)):
+        bar = _bar(100.0, et=et)
+        st.rvol = rvol
+        alerts.extend(ev.on_bar(st, bar))
+
+    assert [alert["setup"] for alert in alerts] == ["low-rvol", "high-rvol"]
+
+
+def test_and_setup_counts_parameterized_trigger_instances_separately(tmp_path):
+    ev = _evaluator(
+        tmp_path,
+        _setup(
+            "tiered-rvol",
+            [
+                {"id": "rvol_cross", "params": {"threshold": 1.5}},
+                {"id": "rvol_cross", "params": {"threshold": 3.0}},
+            ],
+            mode="and",
+            and_window_min=5,
+        ),
+    )
+    st = SimpleNamespace(symbol="AAPL", rvol=None)
+
+    first = _bar(100.0, et="2024-01-02 09:30")
+    st.rvol = 2.0
+    assert ev.on_bar(st, first) == []
+
+    second = _bar(100.0, et="2024-01-02 09:31")
+    st.rvol = 3.1
+    alerts = ev.on_bar(st, second)
+    assert len(alerts) == 1
 
 
 def test_and_mode_requires_all_triggers_in_window(tmp_path):
