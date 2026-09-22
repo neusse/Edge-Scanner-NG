@@ -309,6 +309,13 @@ percentage distance on the same side. The current bar must touch the current EMA
 that original side (equality counts as a hold); if it closes through, the pullback condition does
 not fire. There must be enough completed regular-session candles to warm the EMA and satisfy the
 away window. The EMA history follows the same seed/session rule described above.
+Range-break volume confirmation runs on each incoming **1-minute** bar, even while the chosen
+range timeframe's current candle is incomplete. It compares that minute's volume with the mean
+per-minute volume of the completed candles that formed the range: total range volume divided by
+the number of range candles and their duration in minutes, then multiplied by `vol_mult`. Thus a
+five-minute range can break on minutes 1 through 5 without comparing a one-minute numerator to a
+five-minute baseline. Zero or missing baseline volume fails closed; the volume latch is not consumed
+until a qualifying break actually occurs.
 
 ### Custom setups
 

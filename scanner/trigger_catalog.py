@@ -311,7 +311,7 @@ def _build_catalog() -> list[TriggerDef]:
                            ParamDef("max_dwell", "Candles allowed near VWAP", 1, 0, 10, 1, "candles")), default_options=("support",)))
     add(TriggerDef("range_break", "Range break", "Highs & lows",
                    "Price has been trapped inside a tight range for N completed candles and "
-                   "then leaves it on a volume bar. The same shape as an opening-range break, "
+                   "then leaves it on a 1-minute bar whose volume exceeds the range's per-minute average. The same shape as an opening-range break, "
                    "except the range is any N-candle consolidation rather than the first "
                    "candle of the day, so it can happen at any hour.",
                    "both", _UPDOWN, "Direction",
@@ -1586,12 +1586,12 @@ def _t_range_break(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     limit = range_width_limit(c, cs, tf, n, unit, float(p["max_range_pct"]))
     if limit is None or hi - lo > limit:
         return None
-    # Volume on the breaking bar, against the average INSIDE the range. A
-    # consolidation is quiet by construction, so this asks whether anything
-    # actually showed up to break it rather than whether it drifted out.
+    # Evaluation happens on every 1-minute bar, including minute 1 of an
+    # incomplete higher-timeframe candle. Convert the completed range candles'
+    # volume to a per-minute baseline before comparing like time units.
     vols = [float(x.get("volume") or 0.0) for x in cs]
-    avg = sum(vols) / len(vols) if vols else 0.0
-    if avg > 0 and float(c.bar.get("volume") or 0.0) < avg * float(p["vol_mult"]):
+    avg = sum(vols) / (len(vols) * tf) if vols else 0.0
+    if avg <= 0 or float(c.bar.get("volume") or 0.0) < avg * float(p["vol_mult"]):
         return None
     px = float(c.bar["close"])
     # edge(), not once(): the window slides forward with price, so a trend would

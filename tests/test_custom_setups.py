@@ -629,6 +629,45 @@ def test_range_break_fires_when_a_tight_range_breaks_on_volume(tmp_path):
     assert "range high" in out[0]["trigger_note"]
 
 
+@pytest.mark.parametrize("break_minute", range(5))
+def test_five_min_range_break_compares_one_minute_volume_at_each_minute(tmp_path, break_minute):
+    ev = _evaluator(tmp_path, _setup("cs_x", _rb(bars=2, tf=5, vol_mult=1.5), direction="long"))
+    st = _state(symbol="AAA", prior_close=100.0)
+    quiet = [(100.0, 100.0)] * (10 + break_minute)
+    out = _feed_bars(ev, st, quiet + [(101.0, 160.0)])
+    assert len(out) == 1
+    assert "range high" in out[0]["trigger_note"]
+
+
+def test_five_min_range_break_replay_and_live_seed_agree_on_volume():
+    from types import SimpleNamespace
+    from scanner.trigger_catalog import EvalCtx, _IMPL
+
+    index = pd.date_range("2026-09-15 09:30", periods=2, freq="5min",
+                          tz="America/New_York").tz_convert("UTC")
+    cached = pd.DataFrame({"open": [100.0] * 2, "high": [100.0] * 2,
+                           "low": [100.0] * 2, "close": [100.0] * 2,
+                           "volume": [500.0] * 2}, index=index)
+    fresh = SymbolSeries("X")
+    for minute in range(570, 580):
+        fresh.on_bar({"open": 100.0, "high": 100.0, "low": 100.0,
+                      "close": 100.0, "volume": 100.0}, minute, "2026-09-15", None)
+    replay = SymbolSeries("X")
+    replay.seed_intraday(cached)
+    bar = {"open": 101.0, "high": 101.0, "low": 101.0,
+           "close": 101.0, "volume": 160.0}
+    fires = []
+    for series in (fresh, replay):
+        session = series.on_bar(bar, 580, "2026-09-15", None)
+        ctx = EvalCtx(state=SimpleNamespace(symbol="X"), series=series, bar=bar,
+                      et_min=580, session=session, external=set())
+        fires.append(_IMPL["range_break"](ctx, "up", {"bars": 2, "tf": 5,
+                                                    "max_range_pct": 1.5,
+                                                    "vol_mult": 1.5}))
+    assert all(fire is not None for fire in fires)
+    assert fires[0].value == fires[1].value
+
+
 def test_range_break_does_not_use_prior_day_consolidation(tmp_path):
     ev = _evaluator(
         tmp_path,
