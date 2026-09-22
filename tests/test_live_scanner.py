@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from scanner.alert_sink import AlertSink
+from scanner.custom_setups import CustomEvaluator, CustomSetupStore
 from scanner.data.interface import DataFeed, Timeframe
 from scanner.live_scanner import LiveScanner
 from scanner.market import MarketRegime
@@ -170,6 +171,33 @@ def test_seed_session_bar_keeps_state_and_custom_trigger_series_in_sync():
     ctx = EvalCtx(state=state, series=scanner.series("AAPL"), bar=lower,
                   et_min=9 * 60 + 31, session=session, external=set())
     assert evaluate("hod", ctx, "high", {}) is None
+
+
+def test_seed_session_bar_primes_gap_state_without_emitting(tmp_path):
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    state = scanner._states["AAPL"]
+    state._reset_intraday()
+
+    store = CustomSetupStore(tmp_path / "custom", defaults=tmp_path / "none.json")
+    store.save({
+        "id": "gap-up",
+        "name": "Gap up",
+        "enabled": True,
+        "mode": "or",
+        "direction": "long",
+        "sessions": ["rth"],
+        "triggers": [{"id": "gap", "options": ["up"], "params": {"min_pct": 4.0}}],
+    })
+    custom_sink = AlertSink()
+    scanner.attach_custom(CustomEvaluator(store), custom_sink)
+
+    gap_price = state.prior_close * 1.05
+    assert scanner.seed_session_bar(_bar("AAPL", gap_price, "2024-01-02 09:30"))
+    assert len(custom_sink) == 0
+
+    scanner._on_bar(_bar("AAPL", gap_price, "2024-01-02 12:00"))
+    assert len(custom_sink) == 0
 
 
 # ── SPY bar routing ───────────────────────────────────────────────────────────
