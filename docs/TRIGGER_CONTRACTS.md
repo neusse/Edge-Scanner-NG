@@ -1,6 +1,6 @@
 # Native trigger contract matrix
 
-This table is the event-lifetime and boundary reference for the 45 native alert triggers. The
+This table is the event-lifetime and boundary reference for the native alert triggers. The
 catalog exposes `lifetime` and `sessions` to the setup editor and Setup Check. All triggers use
 US Eastern session dates. A bar timestamp marks its start; completed-candle events are evaluated
 on the next incoming minute. Unless a row says otherwise, a crossing is strict on the current
@@ -24,7 +24,8 @@ sink can further suppress publication; those do not change the trigger's event c
 | `near_last_low` | approach_edge | Pre, RTH | Close approaches swing low inside one timeframe ATR; current low remains at/above level. |
 | `reject_last_high` | completed_candle | RTH | Completed candle touches/pokes prior swing high, closes red back below it. |
 | `reject_last_low` | completed_candle | RTH | Completed candle touches/pokes prior swing low, closes green back above it. |
-| `orb_breakout` | once_per_day | RTH | After today's opening candle completes, close crosses its high once. |
+| `orb_breakout` | once_per_day | RTH | After today's opening candle completes, close crosses its high once. `eventSemantics: bar-close-cross`; not a fresh trade. |
+| `orb_trade_cross` | once_per_day | RTH | First observed fresh Schwab trade crosses strictly above the completed 5- or 15-minute opening high, after a same-stream below-side observation. `eventSemantics: trade-cross`; [full contract](ORB_TRADE_CROSS.md). |
 | `orb_breakdown` | once_per_day | RTH | After today's opening candle completes, close crosses its low once. |
 | `bull_candle_close` | completed_candle | Pre, RTH | Every completed green candle qualifies. |
 | `bear_candle_close` | completed_candle | Pre, RTH | Every completed red candle qualifies. |

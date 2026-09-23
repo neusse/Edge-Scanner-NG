@@ -2,6 +2,8 @@
 
 Edge retains current Schwab Level One equity observations alongside its bar scanner. It uses the **existing Schwab stream**, not another token/session or dashboard WebSocket. Quotes are observations, not executable prices or permission to trade. A consumer must apply its own freshness, market-session, broker, and risk rules. See the [alert-feed contract](ALERT_FEED.md) for alert identity and recovery; alert bar time is not quote time.
 
+The opt-in [fresh-trade ORB trigger](ORB_TRADE_CROSS.md) consumes paired raw Level One last-price/trade-time updates on this same connection. A cached `last` value in this API, by itself, is not proof of a new trade crossing.
+
 ## Read and watch
 
 | Endpoint | Meaning |
@@ -15,6 +17,8 @@ Edge retains current Schwab Level One equity observations alongside its bar scan
 The read APIs and dashboard do not subscribe on demand. A new symbol needs to be in the active scanner universe or explicitly watched. A quote watch is not a scanner-universe change and does not create alerts or bars. The default server binds to loopback; these endpoints have no application authentication, so do not expose them to an untrusted network.
 
 `stream_id` changes each scanner process; `seq` is process-local and monotonic. Store both as a consumer cursor and request pages until caught up. If `stream_id` changes, discard the old cursor and fetch current rows. `oldest_seq` and `gap: true` mean the bounded update ring has overwritten unconsumed events; discard assumptions about continuity and read current rows again. There is no cross-process quote cursor or persistent quote archive. Quotes may be stale across reconnect, market close, or a scanner restart; never carry a previous-process observation into a new session as fresh.
+
+`connection_epoch` increments when this process observes a stream disconnect. Fresh-trade ORB uses `(stream_id, connection_epoch)` to discard its prior below-side observation after reconnect; the first new trade only reestablishes a baseline.
 
 ## Fields and quality
 

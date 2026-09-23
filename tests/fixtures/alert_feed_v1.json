@@ -59,5 +59,34 @@
       "detector_setup_revision": "custom-sha256:fixture-d", "detector_revision": "detector-sha256:fixture-d",
       "source_bar": {"id": "alpaca_minute_bar:AMD:1m:2026-08-20T14:31:00+00:00", "source": "alpaca_minute_bar", "symbol": "AMD", "timeframe": "1m", "market_timestamp": "2026-08-20T14:31:00+00:00", "complete": true}
     }
+  },
+  "trade_orb": {
+    "schema_version": 1, "type": "alert", "session_id": "fixture-live", "mode": "live",
+    "seq": 4, "event_id": "fixture-live:4",
+    "market_timestamp": "2026-09-23T13:35:02+00:00", "emitted_at": "2026-09-23T13:35:02.450000+00:00",
+    "alert": {
+      "schema_version": 1, "event_id": "fixture-live:4", "session_id": "fixture-live", "seq": 4,
+      "mode": "live", "market_timestamp": "2026-09-23T13:35:02+00:00",
+      "emitted_at": "2026-09-23T13:35:02.450000+00:00", "archive_write_ok": true,
+      "source": "custom", "custom": true, "symbol": "AAPL", "setup": "orb_fast",
+      "direction": "long", "price": 101.12, "score": 65,
+      "entry_trigger": "orb_trade_cross:5", "eventSemantics": "trade-cross",
+      "detector_setup_revision": "custom-sha256:fixture-trade",
+      "detector_revision": "detector-sha256:fixture-trade",
+      "source_bar": {"id": "schwab_chart_equity:AAPL:1m:2026-09-23T13:34:00+00:00",
+        "source": "schwab_chart_equity", "symbol": "AAPL", "timeframe": "1m",
+        "market_timestamp": "2026-09-23T13:34:00+00:00", "complete": true},
+      "trade_cross": {
+        "trade_price": 101.12, "trade_market_timestamp": "2026-09-23T13:35:02+00:00",
+        "receipt_timestamp": "2026-09-23T13:35:02.300000+00:00", "latency_ms": 300,
+        "opening_range": {"id": "AAPL:2026-09-23:rth-open:5m:fixture", "interval_min": 5,
+          "high": 101.10, "low": 99.0, "start": "2026-09-23T13:30:00+00:00",
+          "end": "2026-09-23T13:35:00+00:00", "bar_sources": ["schwab_chart_equity"],
+          "complete": true},
+        "source": "schwab_levelone", "tier": "stream", "coverage": "live",
+        "quote_quality": "valid", "stream_id": "fixture-stream", "connection_epoch": 0},
+      "trigger_evidence": [{"trigger": "orb_trade_cross:5", "status": "fired_now",
+        "eventSemantics": "trade-cross", "value": 101.12}]
+    }
   }
 }
