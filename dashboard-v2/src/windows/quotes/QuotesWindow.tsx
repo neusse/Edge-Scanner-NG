@@ -9,6 +9,7 @@ import { readChartPalette } from '../../lib/theme'
 type Line = ISeriesApi<'Line'>
 type Refs = { chart: IChartApi; bid: Line; ask: Line; spread: Line }
 type Point = { time: UTCTimestamp; value?: number }
+const EMPTY_HISTORY: QuoteSample[] = []
 const money = (v: number | null | undefined) => v == null ? '—' : `$${v.toFixed(2)}`
 const bps = (v: number | null | undefined) => v == null ? '—' : `${v.toFixed(1)} bps`
 
@@ -35,10 +36,14 @@ export function QuotesWindow({ win }: { win: QuotesConfig }) {
   const host = useRef<HTMLDivElement>(null)
   const refs = useRef<Refs | null>(null)
   const fitted = useRef<string | null>(null)
-  const [current, setCurrent] = useState<QuoteObservation | null>(null)
-  const [history, setHistory] = useState<QuoteSample[]>([])
-  const [hover, setHover] = useState<QuoteSample | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [response, setResponse] = useState<{ symbol: string; current: QuoteObservation | null;
+    history: QuoteSample[]; error: string | null } | null>(null)
+  const [hoverState, setHover] = useState<{ symbol: string; row: QuoteSample | null } | null>(null)
+  const active = response?.symbol === symbol ? response : null
+  const current = active?.current ?? null
+  const history = active?.history ?? EMPTY_HISTORY
+  const error = active?.error ?? null
+  const hover = hoverState?.symbol === symbol ? hoverState.row : null
 
   useEffect(() => {
     if (!host.current) return
@@ -56,18 +61,10 @@ export function QuotesWindow({ win }: { win: QuotesConfig }) {
       priceLineVisible: false, priceFormat: { type: 'custom', formatter: (n: number) => `${n.toFixed(1)} bps` } }, 1)
     chart.panes()[1]?.setHeight(95)
     refs.current = { chart, bid, ask, spread }
-    chart.subscribeCrosshairMove(param => {
-      if (param.time === undefined) { setHover(null); return }
-      const sec = Number(param.time)
-      const row = historyRef.current.find(s => Math.floor(s.time_ms / 1000) === sec)
-      setHover(row ?? null)
-    })
     return () => { refs.current = null; chart.remove() }
   }, [])
 
-  const historyRef = useRef<QuoteSample[]>([])
   useEffect(() => {
-    historyRef.current = history
     const r = refs.current
     if (!r) return
     r.bid.setData(points(history, 'bid'))
@@ -80,16 +77,28 @@ export function QuotesWindow({ win }: { win: QuotesConfig }) {
   }, [history, symbol])
 
   useEffect(() => {
-    setCurrent(null); setHistory([]); setHover(null); setError(null); fitted.current = null
+    const chart = refs.current?.chart
+    if (!chart || !symbol) return
+    const onMove = (param: { time?: unknown }) => {
+      const sec = param.time === undefined ? null : Number(param.time)
+      const row = sec === null ? null : history.find(s => Math.floor(s.time_ms / 1000) === sec) ?? null
+      setHover({ symbol, row })
+    }
+    chart.subscribeCrosshairMove(onMove)
+    return () => chart.unsubscribeCrosshairMove(onMove)
+  }, [history, symbol])
+
+  useEffect(() => {
     if (!symbol) return
     let alive = true
     const load = async () => {
       try {
         const [now, past] = await Promise.all([api.quote(symbol), api.quoteHistory(symbol, 1800)])
         if (!alive) return
-        setCurrent(now); setHistory(past.samples); setError(null)
+        setResponse({ symbol, current: now, history: past.samples, error: null })
       } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : String(e))
+        if (alive) setResponse({ symbol, current: null, history: [],
+          error: e instanceof Error ? e.message : String(e) })
       }
     }
     void load()
