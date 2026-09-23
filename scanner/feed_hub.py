@@ -271,6 +271,11 @@ class FeedHub:
     def publish(self, alert: dict, source: str) -> dict:
         a = sanitize(dict(alert))
         a["source"] = "custom" if a.get("custom") else source
+        # Producers outside LiveScanner may not have a saved setup or a bar.
+        # Unknown is explicit; never infer today's rules for an old event.
+        a.setdefault("detector_setup_revision", None)
+        a.setdefault("detector_revision", None)
+        a.setdefault("source_bar", None)
         with self._lock:
             self.published += 1
             a["schema_version"] = SCHEMA_VERSION

@@ -8,6 +8,8 @@
       "mode": "live", "market_timestamp": "2026-09-23T14:31:00+00:00",
       "emitted_at": "2026-09-23T14:31:01+00:00", "archive_write_ok": true,
       "source": "system", "symbol": "AAPL", "setup": "HOD_BREAKOUT", "direction": "long",
+      "detector_setup_revision": "system-sha256:fixture-a", "detector_revision": "detector-sha256:fixture-a",
+      "source_bar": {"id": "schwab_chart_equity:AAPL:1m:2026-09-23T14:31:00+00:00", "source": "schwab_chart_equity", "symbol": "AAPL", "timeframe": "1m", "market_timestamp": "2026-09-23T14:31:00+00:00", "complete": true},
       "timestamp": "2026-09-23T10:31:00-04:00", "price": 200.5, "score": 82,
       "trigger": "hod_breakout", "session": "rth", "suggested_stop": null, "warnings": []
     }
@@ -21,6 +23,8 @@
       "mode": "live", "market_timestamp": "2026-09-23T14:32:00+00:00",
       "emitted_at": "2026-09-23T14:32:01+00:00", "archive_write_ok": true,
       "source": "custom", "custom": true, "symbol": "NVDA", "setup": "cs_orb_1",
+      "detector_setup_revision": "custom-sha256:fixture-b", "detector_revision": "detector-sha256:fixture-b",
+      "source_bar": {"id": "schwab_quote_derived:NVDA:1m:2026-09-23T14:32:00+00:00", "source": "schwab_quote_derived", "symbol": "NVDA", "timeframe": "1m", "market_timestamp": "2026-09-23T14:32:00+00:00", "complete": true},
       "setup_label": "Opening Range Break", "direction": "long", "price": 220.75,
       "trigger": "CS_cs_orb_1:orb", "entry_trigger": "orb", "score": 76,
       "trigger_evidence": [{"trigger": "orb", "status": "fired_now"}], "context": {"rvol": 2.1}
@@ -35,6 +39,8 @@
       "mode": "live", "market_timestamp": "2026-09-23T14:33:00+00:00",
       "emitted_at": "2026-09-23T14:33:01+00:00", "archive_write_ok": true,
       "source": "custom", "custom": true, "symbol": "MU",
+      "detector_setup_revision": "custom-sha256:fixture-c", "detector_revision": "detector-sha256:fixture-c",
+      "source_bar": {"id": "schwab_chart_equity:MU:1m:2026-09-23T14:33:00+00:00", "source": "schwab_chart_equity", "symbol": "MU", "timeframe": "1m", "market_timestamp": "2026-09-23T14:33:00+00:00", "complete": true},
       "setup": "cs_exit_trade_watch_wfwk", "setup_label": "Exit Trade Watch",
       "direction": "long", "price": 145.12, "score": 50,
       "entry_trigger": "cross_below:ema9_5", "trigger": "CS_cs_exit_trade_watch_wfwk:cross_below:ema9_5",
@@ -49,7 +55,9 @@
       "schema_version": 1, "event_id": "fixture-replay:1", "session_id": "fixture-replay", "seq": 1,
       "mode": "replay", "market_timestamp": "2026-08-20T14:31:00+00:00",
       "emitted_at": "2026-09-23T14:31:01+00:00", "archive_write_ok": true,
-      "source": "custom", "symbol": "AMD", "setup": "cs_example", "direction": "long", "price": 150.0
+      "source": "custom", "symbol": "AMD", "setup": "cs_example", "direction": "long", "price": 150.0,
+      "detector_setup_revision": "custom-sha256:fixture-d", "detector_revision": "detector-sha256:fixture-d",
+      "source_bar": {"id": "alpaca_minute_bar:AMD:1m:2026-08-20T14:31:00+00:00", "source": "alpaca_minute_bar", "symbol": "AMD", "timeframe": "1m", "market_timestamp": "2026-08-20T14:31:00+00:00", "complete": true}
     }
   }
 }

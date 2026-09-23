@@ -32,6 +32,9 @@ For a backlog, heartbeat or status frame, top-level `seq` and `event_id` are the
 | `emitted_at` | UTC, timezone-aware ISO 8601 time Edge published the alert. Old imported records have null because their original emission time is unknown. |
 | `archive_write_ok` | The JSONL append returned successfully. `false` means this live event may not be recoverable. This is not an fsync or exactly-once guarantee. |
 | `source` | `system` (plugin setup), `custom` (configured setup), or `unknown` for an old record whose source is missing. |
+| `detector_setup_revision` | Immutable SHA-256 identity of the saved custom setup document used by this alert (`custom-sha256:`), or the system setup code, live settings hash and installed evaluator module (`system-sha256:`). It is the catalog entry's same-named value at the moment those rules were active; do not fetch the current catalog and assign its revision to an old event. A later save, including a rename, creates a new custom revision. |
+| `detector_revision` | SHA-256 identity of that setup revision plus the selected universe profile ID/conditions, shared parameter-set and per-setup conditions, and live settings values (`detector-sha256:`). This is the effective detector configuration identity; compare it with the catalog entry's same-named value only if read at the same config moment. It does **not** claim to capture the entire software build, upstream market data, or historical fundamentals. |
+| `source_bar` | The one-minute input evaluated when the alert was emitted: `id`, provider `source`, `symbol`, `timeframe: "1m"`, UTC `market_timestamp` (minute start), and `complete`. This is the evaluated input bar, not necessarily the minute of every item in `trigger_evidence` and not a trade/quote event ID. |
 | `symbol`, `setup`, `setup_label` | Instrument ticker, stable setup ID, and changeable display name. A setup rename does not change its ID. |
 | `trigger`, `entry_trigger`, `trigger_evidence` | Trigger identity; for composed setups, evidence lists the satisfying triggers, including earlier bars in the configured window. |
 | `direction` | Price/setup direction (`long`, `short`, `neutral`), **not an order side**. Read the setup semantics before acting. |
@@ -43,6 +46,10 @@ For a backlog, heartbeat or status frame, top-level `seq` and `event_id` are the
 | `context`, `warnings`, `gates` | Producer evidence and diagnostics; nested keys are additive and may be absent. |
 
 Unless a field is listed as required in the schema, it may be absent. Nullable fields use JSON `null` for unknown; consumers must not substitute zero, `false`, or an empty string. Precision is the source/provider's available precision; do not infer executable quote freshness from an alert price or minute-bar timestamp.
+
+For new scanner-produced alerts, the two revisions and `source_bar` are populated before publication. The catalog endpoint `GET /api/v2/setups` exposes the current values for each system and custom setup. If a setup or its gates change between two alerts, their effective revision changes; the first alert keeps its original value in the archive and replay. Older archived alerts, and publishers that supplied no saved setup or bar, return `null` for unavailable provenance. A consumer that needs an exact detector snapshot must retain the catalog document when it sees a new revision; Edge's current catalog is not a historical-revision store.
+
+`source_bar.source` distinguishes `schwab_chart_equity` from `schwab_quote_derived` and `alpaca_minute_bar`. Quote-derived bars are completed one-minute *estimates* built from Level One quotes (streamed or polled); their intraminute high/low can be less precise than CHART_EQUITY. All labelled feed bars are emitted after their minute closes and carry `complete: true`. Unlabelled or legacy bars use `source: "unknown"` and `complete: null`; no consumer should infer a completed candle from a null. The `id` is a deterministic key for the source, symbol and minute, not a provider event sequence or proof that duplicate/corrected bars cannot occur.
 
 ## Filters
 

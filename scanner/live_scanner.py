@@ -19,6 +19,7 @@ from typing import Optional
 
 import pandas as pd
 
+from scanner.alert_provenance import effective_revision, source_bar, system_revision
 from scanner.alert_sink import AlertSink
 from scanner.data.interface import DataFeed
 from scanner.conditions import ConditionCtx
@@ -241,7 +242,7 @@ class LiveScanner:
         self._profiles = engine
 
     def _passes_profile(self, alert: dict, state: SymbolState, bar: dict,
-                        session: str, cache, source: str) -> bool:
+                        session: str, cache, source: str, evaluator=None) -> bool:
         """The choke point. Returns True when the alert may be emitted.
 
         Every evaluator's alerts pass through here, so screening is uniform and
@@ -253,6 +254,13 @@ class LiveScanner:
                 Passed explicitly rather than sniffed from the payload.
         """
         eng = self._profiles
+        alert["source_bar"] = source_bar(bar)
+        from scanner.settings import settings
+        config_hash = alert.get("config_hash") or settings.hash
+        if source == "system":
+            alert["detector_setup_revision"] = system_revision(
+                alert.get("setup", ""), config_hash, evaluator)
+        base_revision = alert.get("detector_setup_revision")
         quote_book = getattr(self.feed, "quote_book", None)
         quote = quote_book.get(state.symbol) if quote_book is not None else None
         if quote is not None:
@@ -260,6 +268,8 @@ class LiveScanner:
             # It is independent of the bar's market timestamp and price.
             alert["quote"] = quote
         if eng is None:
+            alert["detector_revision"] = effective_revision(
+                base_revision, config_hash=config_hash, settings_values=settings.modified())
             return True
         try:
             if source == "custom":
@@ -272,6 +282,8 @@ class LiveScanner:
             # condition in both is not a conflict: the tighter threshold wins.
             params = (list(eng.params_for(self._custom_param_sets.get(code)))
                       + list(self._custom_params.get(code, ()))) if source == "custom" else []
+            alert["detector_revision"] = effective_revision(
+                base_revision, cp, params, config_hash, settings.modified())
             if (cp is None or cp.is_empty) and not params:
                 return True
             ctx = ConditionCtx(state=state, series=self._series.get(state.symbol),
@@ -308,6 +320,7 @@ class LiveScanner:
             return passed
         except Exception as exc:
             log.error("profile check failed for %s: %s", state.symbol, exc, exc_info=True)
+            alert["detector_revision"] = None
             return True
 
     def _record_push(self, accepted, alert: dict, source: str, code: str):
@@ -698,7 +711,7 @@ class LiveScanner:
                 spy_mom15 = self._spy_state.mom_15m_pct if self._spy_state is not None else None
                 for alert in self._system_evaluator.on_bar(state, bar, spy_chg, spy_mom15):
                     ext_fired.add(f"setup:{alert['setup']}")
-                    if not self._passes_profile(alert, state, bar, session, pcache, "system"):
+                    if not self._passes_profile(alert, state, bar, session, pcache, "system", self._system_evaluator):
                         continue
                     if self._record_push(self._system_sink.push(alert), alert, "system", alert["setup"]):
                         log.info(
@@ -719,7 +732,7 @@ class LiveScanner:
             try:
                 for alert in self._de_evaluator.on_bar(state, bar):
                     ext_fired.add(f"setup:{alert['setup']}")
-                    if not self._passes_profile(alert, state, bar, session, pcache, "system"):
+                    if not self._passes_profile(alert, state, bar, session, pcache, "system", self._de_evaluator):
                         continue
                     if self._record_push(self._system_sink.push(alert), alert, "system", alert["setup"]):
                         log.info(
