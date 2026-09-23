@@ -323,6 +323,19 @@ class _CustomPrintSink(AlertSink):
 # Main
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _print_history_summary(feed, bucket: str, total: int, started: float) -> None:
+    stats = getattr(feed, "_history_stats", {}).get(bucket)
+    if stats is None:  # third-party providers may not expose cache diagnostics
+        return
+    counted = stats["current"] + stats["incremental"] + stats["full"]
+    print(
+        f"       Cache: {stats['current']} current, {stats['incremental']} incremental, "
+        f"{stats['full']} full, {max(0, total - counted)} failed; "
+        f"{stats['requests']} history request(s) in {time.perf_counter() - started:.1f}s",
+        flush=True,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run the live scanner end-to-end (build universe -> warmup -> scan)"
@@ -332,6 +345,8 @@ def main() -> None:
                              "file is used verbatim, with no age check or rebuild.")
     parser.add_argument("--refresh-universe", action="store_true",
                         help="Force universe rebuild even if it is fresh")
+    parser.add_argument("--force-refresh-history", action="store_true",
+                        help="Ignore daily and 5-minute history caches and download full windows")
     parser.add_argument("--history-days",  type=int, default=60,
                         help="Days of daily history to load (default: 60)")
     parser.add_argument("--intraday-days", type=int, default=20,
@@ -404,19 +419,27 @@ def main() -> None:
     # ── 3. Daily history ──────────────────────────────────────────────────────
     _step(3, TOTAL_STEPS, f"Daily history  ({args.history_days} days)")
     feed = make_feed(args.feed)
+    if args.force_refresh_history:
+        if not hasattr(feed, "force_refresh_history"):
+            sys.exit(f"--force-refresh-history is not supported by the {args.feed} feed")
+        feed.force_refresh_history = True
     if args.feed != "alpaca":
         print(f"       Note: default thresholds were set on Alpaca SIP data; {args.feed} "
               f"volumes can differ slightly", flush=True)
     elif os.environ.get("ALPACA_FEED", "sip").strip().lower() == "iex":
         print("       *** ALPACA_FEED=iex: free single-exchange data. Volume and RVOL read far "
               "lower than on SIP, so volume-based setups fire much less. ***", flush=True)
+    history_started = time.perf_counter()
     spy_daily, symbol_daily, sector_daily = _fetch_daily_history(
         feed, symbols, sector_etfs, args.history_days
     )
+    _print_history_summary(feed, "daily", 1 + len(sector_etfs) + len(symbols), history_started)
 
     # ── 4. 5-min bars (RVOL) ─────────────────────────────────────────────────
     _step(4, TOTAL_STEPS, f"Intraday bars  ({args.intraday_days} days of 5-min data)")
+    history_started = time.perf_counter()
     bars_5m = _fetch_intraday_history(feed, symbols, args.intraday_days)
+    _print_history_summary(feed, "5m", len(symbols), history_started)
     if not bars_5m:
         print("\n  WARNING: No 5-min bars fetched.\n"
               "  The rvol gate requires intraday history --no alerts will fire.\n"
@@ -510,6 +533,7 @@ def main() -> None:
     # Without this, rrs_m5 stays None for all symbols after a mid-session
     # restart — and once bars_5m_count >= 12, gate_rrs_d1 returns
     # passed=False (rrs_unavailable), blocking all alerts permanently.
+    seed_started = time.perf_counter()
     print("       Seeding today's intraday state (VWAP + levels + 5-min bars) ...", flush=True)
     spy_bar_map: dict = {}
     for spy_ts, spy_row in today_spy.iterrows():
@@ -560,11 +584,13 @@ def main() -> None:
             seeded_from_bars.add(sym)
         print(
             f"       {len(seeded_from_bars)}/{len(all_syms)} symbols seeded from bars"
-            f"  ({len(all_syms) - len(seeded_from_bars)} missing)",
+            f"  ({len(all_syms) - len(seeded_from_bars)} missing)"
+            f" in {time.perf_counter() - seed_started:.1f}s",
             flush=True,
         )
     except Exception as exc:
-        print(f"       WARNING: Could not seed intraday bars: {exc}", flush=True)
+        print(f"       WARNING: Could not seed intraday bars after "
+              f"{time.perf_counter() - seed_started:.1f}s: {exc}", flush=True)
 
     # A provider that can back-fill today's bars only for its most liquid symbols
     # (Schwab) fills the rest from quotes when the session is already under way:

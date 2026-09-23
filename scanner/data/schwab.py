@@ -50,6 +50,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 from scanner.cache import parquet
+from scanner.cache.history import RequestedCoverage, merge_history, plan_history
 from scanner.data.interface import DataFeed, Timeframe
 
 load_dotenv(override=True)
@@ -126,16 +127,6 @@ def refresh_token_age_days(db: Path = _TOKENS_DB) -> float | None:
         return None
 
 
-def _covers(df: pd.DataFrame, start: date, slack_days: int = 6) -> bool:
-    """True when a cached frame reaches back to `start` (allowing for weekends
-    and holidays at the front of the range)."""
-    if df is None or df.empty:
-        return False
-    first = pd.Timestamp(df.index.min()).tz_convert(_ET).date() if df.index.tz is not None \
-        else pd.Timestamp(df.index.min()).date()
-    return (first - start).days <= slack_days
-
-
 def _num(v) -> float | None:
     """A quote field as a float, or None when it is missing or not a number."""
     try:
@@ -145,70 +136,7 @@ def _num(v) -> float | None:
     return f if f == f else None
 
 
-def _fresh(path: Path, df: pd.DataFrame, end: date) -> bool:
-    """True when a cached frame does not need re-downloading.
-
-    Schwab serves ONE symbol per history request at about 120 requests a minute,
-    so re-downloading a whole-market universe every morning costs hours. A file
-    is fresh when its data already reaches the last session on or before `end`
-    (a Monday premarket start is served by Friday's bars), or when it was
-    written today (covers symbols that simply did not trade that session).
-    """
-    if df is None or df.empty:
-        return False
-    target = end
-    while target.weekday() >= 5:                       # roll a weekend back to Friday
-        target = date.fromordinal(target.toordinal() - 1)
-    last = pd.Timestamp(df.index.max())
-    last_day = last.tz_convert(_ET).date() if last.tzinfo is not None else last.date()
-    if last_day >= target:
-        return True
-    return datetime.fromtimestamp(path.stat().st_mtime).date() >= date.today()
-
-
-class _Asked:
-    """Earliest start date already requested from Schwab, per symbol, per cache.
-
-    A symbol whose history is shorter than the window asked for (a recent
-    listing) can never "cover" the start, so without a record of the request it
-    was downloaded again on every start: about 1,800 extra requests on a
-    6,456-symbol universe, fifteen minutes at Schwab's 120 a minute. If the same
-    span or a longer one was already asked for, the cached frame IS everything
-    Schwab has. Kept in one small JSON file beside the parquet files.
-    """
-
-    def __init__(self, cache_dir: Path) -> None:
-        self._path = Path(cache_dir) / "_asked.json"
-        self._lock = threading.Lock()
-        self._dirty = False
-        try:
-            self._map: dict[str, str] = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            self._map = {}
-
-    def covers(self, symbol: str, start: date) -> bool:
-        got = self._map.get(symbol)
-        return got is not None and got <= start.isoformat()
-
-    def note(self, symbol: str, start: date) -> None:
-        iso = start.isoformat()
-        with self._lock:
-            if self._map.get(symbol, "9999") > iso:
-                self._map[symbol] = iso
-                self._dirty = True
-
-    def save(self) -> None:
-        with self._lock:
-            if not self._dirty:
-                return
-            try:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._path.with_suffix(".tmp")
-                tmp.write_text(json.dumps(self._map), encoding="utf-8")
-                os.replace(tmp, self._path)
-                self._dirty = False
-            except OSError as exc:
-                log.debug("could not save %s: %s", self._path, exc)
+_Asked = RequestedCoverage
 
 
 class SchwabFeed(DataFeed):
@@ -219,12 +147,17 @@ class SchwabFeed(DataFeed):
         cache_dir: Path = _DEFAULT_DAILY_CACHE,
         intraday_cache_dir: Path = _DEFAULT_INTRADAY_CACHE,
         client=None,
+        force_refresh_history: bool = False,
     ) -> None:
         self._cache_dir = Path(cache_dir)
         self._intraday_cache_dir = Path(intraday_cache_dir)
         self._asked_daily = _Asked(self._cache_dir)
         self._asked_intraday = _Asked(self._intraday_cache_dir)
         self._in_batch = False
+        self.force_refresh_history = force_refresh_history
+        self._history_stats = {"daily": {"current": 0, "incremental": 0, "full": 0, "requests": 0},
+                               "5m": {"current": 0, "incremental": 0, "full": 0, "requests": 0}}
+        self._stats_lock = threading.Lock()
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._intraday_cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -327,32 +260,39 @@ class SchwabFeed(DataFeed):
     # ── DataFeed interface ────────────────────────────────────────────────────
 
     def get_historical_daily(self, symbol: str, start: date, end: date) -> pd.DataFrame:
-        # Reuse today's file only if it reaches back far enough: the universe
-        # build and the warmup ask for different spans on the same morning.
-        p = self._cache_dir / f"{symbol}.parquet"
-        if p.exists():
-            cached = parquet.load(symbol, self._cache_dir)
-            if _fresh(p, cached, end) and (_covers(cached, start) or self._asked_daily.covers(symbol, start)):
-                return cached
-        df = self._price_history(symbol, "Day", start, end)
-        parquet.save(symbol, df, self._cache_dir)
-        self._asked_daily.note(symbol, start)
-        if not self._in_batch:
-            self._asked_daily.save()
-        return df
+        return self._cached_history(symbol, "Day", start, end, self._cache_dir, self._asked_daily, "daily")
 
     def get_historical_bars(self, symbol: str, timeframe: Timeframe,
                             start: date, end: date) -> pd.DataFrame:
-        p = self._intraday_cache_dir / f"{symbol}.parquet"
-        if p.exists():
-            cached = parquet.load(symbol, self._intraday_cache_dir)
-            if _fresh(p, cached, end) and (_covers(cached, start) or self._asked_intraday.covers(symbol, start)):
-                return cached
-        df = self._price_history(symbol, timeframe, start, end)
-        parquet.save(symbol, df, self._intraday_cache_dir)
-        self._asked_intraday.note(symbol, start)
+        return self._cached_history(symbol, timeframe, start, end, self._intraday_cache_dir,
+                                    self._asked_intraday, "5m")
+
+    def _cached_history(self, symbol: str, timeframe: Timeframe, start: date, end: date,
+                        cache_dir: Path, asked: _Asked, bucket: str) -> pd.DataFrame:
+        try:
+            cached = parquet.load(symbol, cache_dir)
+        except Exception as exc:
+            log.warning("Invalid history cache for %s: %s; downloading full range", symbol, exc)
+            cached = None
+        plan = plan_history(cached, start, end, covered_start=asked.covers(symbol, start),
+                            checked_end=asked.checked_through(symbol), force=self.force_refresh_history)
+        if plan.mode == "current":
+            with self._stats_lock:
+                self._history_stats[bucket]["current"] += 1
+            return cached
+        parts = [cached] if plan.mode == "incremental" else []
+        for range_start, range_end in plan.spans:
+            with self._stats_lock:
+                self._history_stats[bucket]["requests"] += 1
+            parts.append(self._price_history(symbol, timeframe, range_start, range_end))
+        df = merge_history(*parts)
+        if not df.empty:
+            parquet.save(symbol, df, cache_dir)
+        asked.note(symbol, start, end)
         if not self._in_batch:
-            self._asked_intraday.save()
+            asked.save()
+        with self._stats_lock:
+            self._history_stats[bucket][plan.mode] += 1
         return df
 
     def get_bars_range(self, symbol: str, timeframe: Timeframe,

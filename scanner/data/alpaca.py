@@ -2,6 +2,7 @@ import logging
 import os
 import random
 import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime
 from pathlib import Path
@@ -17,6 +18,7 @@ from alpaca.data.requests import StockBarsRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 from scanner.cache import parquet
+from scanner.cache.history import HistoryPlan, RequestedCoverage, merge_history, plan_history
 from scanner.data.interface import DataFeed, Timeframe
 
 load_dotenv(override=True)
@@ -71,6 +73,7 @@ class AlpacaFeed(DataFeed):
         *,  # keyword-only: a positional AlpacaFeed(key, secret) creates cache dirs named after the credentials
         cache_dir: Path = _DEFAULT_DAILY_CACHE,
         intraday_cache_dir: Path = _DEFAULT_INTRADAY_CACHE,
+        force_refresh_history: bool = False,
     ) -> None:
         api_key = os.environ["ALPACA_API_KEY"]
         secret_key = os.environ["ALPACA_SECRET_KEY"]
@@ -79,16 +82,26 @@ class AlpacaFeed(DataFeed):
         self._intraday_cache_dir = Path(intraday_cache_dir)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._intraday_cache_dir.mkdir(parents=True, exist_ok=True)
+        self.force_refresh_history = force_refresh_history
+        self._asked_daily = RequestedCoverage(self._cache_dir)
+        self._asked_intraday = RequestedCoverage(self._intraday_cache_dir)
+        self._history_stats = {"daily": {"current": 0, "incremental": 0, "full": 0, "requests": 0},
+                               "5m": {"current": 0, "incremental": 0, "full": 0, "requests": 0}}
 
-    def _is_cache_current(self, symbol: str, end: date, cache_dir: Path | None = None) -> bool:
-        p = (cache_dir or self._cache_dir) / f"{symbol}.parquet"
-        if not p.exists():
-            return False
-        # If we wrote the file today, don't re-fetch (handles weekends/holidays where
-        # the most recent data predates `end` but Alpaca would return the same bars anyway)
-        if datetime.fromtimestamp(p.stat().st_mtime).date() >= date.today():
-            return True
-        return parquet.is_fresh(symbol, cache_dir or self._cache_dir, as_of=end)
+    def _history_context(self, cache_dir: Path) -> tuple[RequestedCoverage, str]:
+        return (self._asked_daily, "daily") if cache_dir == self._cache_dir else (self._asked_intraday, "5m")
+
+    def _load_plan(self, symbol: str, start: date, end: date,
+                   cache_dir: Path) -> tuple[pd.DataFrame | None, HistoryPlan]:
+        asked, _ = self._history_context(cache_dir)
+        try:
+            cached = parquet.load(symbol, cache_dir)
+        except Exception as exc:
+            log.warning("Invalid history cache for %s: %s; downloading full range", symbol, exc)
+            cached = None
+        plan = plan_history(cached, start, end, covered_start=asked.covers(symbol, start),
+                            checked_end=asked.checked_through(symbol), force=self.force_refresh_history)
+        return cached, plan
 
     def _fetch_and_cache_bars(
         self,
@@ -98,35 +111,41 @@ class AlpacaFeed(DataFeed):
         end: date,
         cache_dir: Path,
     ) -> pd.DataFrame:
-        request = StockBarsRequest(
-            symbol_or_symbols=symbol,
-            timeframe=timeframe,
-            start=datetime.combine(start, datetime.min.time()),
-            # end must be END of the day: naive datetimes are interpreted as UTC
-            # and daily bars are stamped 04:00 UTC (midnight ET), so a midnight
-            # cutoff silently drops the `end` date's bar — leaving prior_close
-            # and all prior-day levels one session stale.
-            end=datetime.combine(end, datetime.max.time()),
-            feed=market_data_feed(),
-            adjustment=_ADJUST,
-        )
-        bars = self._client.get_stock_bars(request)
-        df = bars.df
-        if isinstance(df.index, pd.MultiIndex):
-            df = df.xs(symbol, level="symbol")
-        df.index = pd.to_datetime(df.index, utc=True)
-        df.index.name = "timestamp"
-        df = df.reindex(columns=_BAR_COLS)
-        parquet.save(symbol, df, cache_dir)
-        return df
+        asked, bucket = self._history_context(cache_dir)
+        cached, plan = self._load_plan(symbol, start, end, cache_dir)
+        if plan.mode == "current":
+            self._history_stats[bucket]["current"] += 1
+            return cached
+        parts = [cached] if plan.mode == "incremental" else []
+        for range_start, range_end in plan.spans:
+            self._history_stats[bucket]["requests"] += 1
+            request = StockBarsRequest(
+                symbol_or_symbols=symbol, timeframe=timeframe,
+                start=datetime.combine(range_start, datetime.min.time()),
+                # Alpaca interprets naive end times as UTC; midnight would
+                # silently drop the final day's daily bar.
+                end=datetime.combine(range_end, datetime.max.time()),
+                feed=market_data_feed(), adjustment=_ADJUST,
+            )
+            bars = self._client.get_stock_bars(request)
+            df = bars.df
+            if df is not None and not df.empty:
+                if isinstance(df.index, pd.MultiIndex):
+                    df = df.xs(symbol, level="symbol")
+                df = df.copy()
+                df.index = pd.to_datetime(df.index, utc=True)
+                df.index.name = "timestamp"
+                parts.append(df.reindex(columns=_BAR_COLS))
+        merged = merge_history(*parts)
+        if not merged.empty:
+            parquet.save(symbol, merged, cache_dir)
+        asked.note(symbol, start, end)
+        asked.save()
+        self._history_stats[bucket][plan.mode] += 1
+        return merged
 
     def get_historical_daily(self, symbol: str, start: date, end: date) -> pd.DataFrame:
-        if self._is_cache_current(symbol, end):
-            log.debug("%s: serving daily bars from cache", symbol)
-            return parquet.load(symbol, self._cache_dir)
-        log.debug("%s: fetching daily bars from Alpaca (%s -> %s)", symbol, start, end)
         df = self._fetch_and_cache_bars(symbol, TimeFrame.Day, start, end, self._cache_dir)
-        log.info("%s: cached %d daily bars through %s", symbol, len(df), end)
         return df
 
     def get_historical_bars(
@@ -141,13 +160,8 @@ class AlpacaFeed(DataFeed):
         Daily and intraday caches live in separate directories so the same
         symbol name can be used as the cache key in both without conflict.
         """
-        if self._is_cache_current(symbol, end, self._intraday_cache_dir):
-            log.debug("%s %s: serving intraday bars from cache", symbol, timeframe)
-            return parquet.load(symbol, self._intraday_cache_dir)
-        log.debug("%s %s: fetching from Alpaca (%s -> %s)", symbol, timeframe, start, end)
         alpaca_tf = _ALPACA_TIMEFRAME[timeframe]
         df = self._fetch_and_cache_bars(symbol, alpaca_tf, start, end, self._intraday_cache_dir)
-        log.info("%s %s: cached %d bars through %s", symbol, timeframe, len(df), end)
         return df
 
     def subscribe_minute_bars(self, symbols: list[str], callback: Callable[[dict], None]) -> None:
@@ -303,29 +317,38 @@ class AlpacaFeed(DataFeed):
                           batch: int, workers: int,
                           progress: Optional[Callable[[int, int], None]] = None,
                           ) -> dict[str, pd.DataFrame]:
-        """Cache-aware batched fetch. Returns {symbol: DataFrame}."""
+        """Batch symbols by the *missing interval*, preserving valid cached bars."""
         out: dict[str, pd.DataFrame] = {}
-        misses: list[str] = []
+        pending: dict[str, tuple[pd.DataFrame | None, HistoryPlan]] = {}
+        intervals: dict[tuple[date, date], list[str]] = defaultdict(list)
+        asked, bucket = self._history_context(cache_dir)
         for sym in symbols:
-            if self._is_cache_current(sym, end, cache_dir):
-                try:
-                    out[sym] = parquet.load(sym, cache_dir)
-                    continue
-                except Exception:
-                    pass
-            misses.append(sym)
+            cached, plan = self._load_plan(sym, start, end, cache_dir)
+            if plan.mode == "current":
+                out[sym] = cached
+                self._history_stats[bucket]["current"] += 1
+                continue
+            pending[sym] = (cached, plan)
+            for span in plan.spans:
+                intervals[span].append(sym)
 
-        log.info("%s: %d cached, %d to fetch", cache_dir.name, len(out), len(misses))
+        log.info("%s: %d current, %d to update in %d ranges", cache_dir.name,
+                 len(out), len(pending), len(intervals))
         if progress:
             progress(len(out), len(symbols))
-        if not misses:
+        if not pending:
             return out
 
-        batches = [misses[i:i + batch] for i in range(0, len(misses), batch)]
+        batches = [(span, group[i:i + batch]) for span, group in intervals.items()
+                   for i in range(0, len(group), batch)]
+        self._history_stats[bucket]["requests"] += len(batches)
         done = len(out)
+        remaining = {sym: len(plan.spans) for sym, (_, plan) in pending.items()}
+        pieces: dict[str, list[pd.DataFrame]] = defaultdict(list)
+        failed: set[str] = set()
 
-        def _one(group: list[str]) -> dict[str, pd.DataFrame]:
-            df = self._request_bars_batch(group, timeframe, start, end)
+        def _one(span: tuple[date, date], group: list[str]) -> dict[str, pd.DataFrame]:
+            df = self._request_bars_batch(group, timeframe, *span)
             got: dict[str, pd.DataFrame] = {}
             if df is None or df.empty:
                 return got
@@ -340,24 +363,36 @@ class AlpacaFeed(DataFeed):
                 d.index = pd.to_datetime(d.index, utc=True)
                 d.index.name = "timestamp"
                 got[group[0]] = d.reindex(columns=_BAR_COLS)
-            for sym, d in got.items():
-                try:
-                    parquet.save(sym, d, cache_dir)
-                except Exception as exc:
-                    log.debug("parquet save %s: %s", sym, exc)
             return got
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {pool.submit(_one, g): g for g in batches}
+            futs = {pool.submit(_one, span, group): group for span, group in batches}
             for fut in as_completed(futs):
                 group = futs[fut]
                 try:
-                    out.update(fut.result())
+                    got = fut.result()
+                    for sym, bars in got.items():
+                        pieces[sym].append(bars)
                 except Exception as exc:
                     log.warning("bars batch of %d failed permanently: %s", len(group), exc)
-                done += len(group)
+                    failed.update(group)
+                for sym in group:
+                    remaining[sym] -= 1
+                    if remaining[sym] == 0:
+                        done += 1
                 if progress:
                     progress(min(done, len(symbols)), len(symbols))
+        for sym, (cached, plan) in pending.items():
+            if sym in failed:
+                continue
+            frames = ([cached] if plan.mode == "incremental" else []) + pieces[sym]
+            merged = merge_history(*frames)
+            if not merged.empty:
+                parquet.save(sym, merged, cache_dir)
+                out[sym] = merged
+            asked.note(sym, start, end)
+            self._history_stats[bucket][plan.mode] += 1
+        asked.save()
         return out
 
     def get_historical_daily_multi(self, symbols: list[str], start: date, end: date,

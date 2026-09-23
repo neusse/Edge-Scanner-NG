@@ -64,3 +64,17 @@ def test_save_creates_parent_dirs():
         nested = Path(tmp) / "a" / "b"
         parquet.save("SPY", _make_df(), nested)
         assert (nested / "SPY.parquet").exists()
+
+
+def test_interrupted_save_keeps_previous_cache(tmp_path, monkeypatch):
+    original = _make_df()
+    parquet.save("SPY", original, tmp_path)
+
+    def interrupted(_df, _path):
+        raise OSError("interrupted")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", interrupted)
+    with pytest.raises(OSError, match="interrupted"):
+        parquet.save("SPY", _make_df(8), tmp_path)
+    pd.testing.assert_frame_equal(parquet.load("SPY", tmp_path), original, check_freq=False)
+    assert len(list(tmp_path.iterdir())) == 1
