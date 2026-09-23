@@ -475,9 +475,10 @@ def test_setups_api_crud_and_hot_reload(client, fake_plugin):
     from scanner import trigger_catalog
     c, ev, st = client
     r = c.get("/api/v2/setups").json()
-    assert r["live"] is True and r["system"] == [
-        {"code": "X1", "name": "Fake Long", "default_name": "Fake Long", "direction": "long"},
-        {"code": "X2", "name": "Fake Short", "default_name": "Fake Short", "direction": "short"}]
+    assert r["live"] is True and [(s["code"], s["name"], s["direction"])
+                                  for s in r["system"]] == [
+        ("X1", "Fake Long", "long"), ("X2", "Fake Short", "short")]
+    assert all(s["detector_revision"].startswith("detector-sha256:") for s in r["system"])
     assert len(r["catalog"]) == len(trigger_catalog.CATALOG)
     assert {"setup:X1", "setup:X2"} <= {t["id"] for t in r["catalog"]}
     assert r["custom"] == []
@@ -485,6 +486,10 @@ def test_setups_api_crud_and_hot_reload(client, fake_plugin):
     r = c.put("/api/v2/setups/cs_test", json=body)
     assert r.status_code == 200 and r.json()["setup"]["summary"]["alerts"] == ["High/Low of the day · High"]
     assert [s["id"] for s in ev.plan.setups] == ["cs_test"]           # evaluator reloaded
+    saved = c.get("/api/v2/setups").json()["custom"][0]
+    from scanner.alert_provenance import custom_revision
+    assert saved["detector_setup_revision"] == custom_revision(ev.plan.setups[0])
+    assert saved["detector_revision"].startswith("detector-sha256:")
     assert c.put("/api/v2/setups/other", json=body).status_code == 400   # id mismatch
     assert c.put("/api/v2/setups/cs_bad", json={"id": "cs_bad", "name": "x", "triggers": [{"id": "nope"}]}).status_code == 400
     assert c.put("/api/v2/setups/names", json={"X2": "Renamed"}).json()["names"]["X2"] == "Renamed"

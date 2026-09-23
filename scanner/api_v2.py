@@ -27,6 +27,7 @@ import pandas as pd
 from fastapi import Body, FastAPI, Query
 from fastapi.responses import FileResponse, JSONResponse
 
+from scanner.alert_provenance import custom_revision, effective_revision, system_revision
 from scanner import plugins
 from scanner.custom_setups import CustomEvaluator, CustomSetupStore, SetupError, SetupNames, summary_lines
 from scanner.events import EventBuffer
@@ -626,11 +627,24 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
 
     def setups_payload() -> dict:
         names = v2.setup_names.load()
-        system = [{"code": s.code, "name": names[s.code], "default_name": s.name, "direction": s.direction}
-                  for s in plugins.SYSTEM_SETUPS]
+        eng = v2.profiles
+        system = []
+        for s in plugins.SYSTEM_SETUPS:
+            evaluator = getattr(scanner, s.evaluator, None)
+            base = system_revision(s.code, settings.hash, evaluator)
+            system.append({"code": s.code, "name": names[s.code], "default_name": s.name,
+                           "direction": s.direction, "detector_setup_revision": base,
+                           "detector_revision": effective_revision(
+                               base, eng.for_setup(s.code) if eng else None,
+                               config_hash=settings.hash, settings_values=settings.modified())})
         custom = v2.setups.load_all()
         for c in custom:
             c["summary"] = summary_lines(c)
+            base = custom_revision({k: v for k, v in c.items() if k != "summary"})
+            cp = eng.for_setup(c["id"], c.get("universe_profile")) if eng else None
+            params = (eng.params_for(c.get("parameter_set")) if eng else []) + (c.get("parameters") or [])
+            c["detector_setup_revision"] = base
+            c["detector_revision"] = effective_revision(base, cp, params, settings.hash, settings.modified())
         ev = v2.custom_eval
         return {
             "system": system,
@@ -805,6 +819,7 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
             return JSONResponse({"error": str(exc)}, status_code=500)
         _reload_eval()
         saved["summary"] = summary_lines(saved)
+        saved["detector_setup_revision"] = custom_revision({k: v for k, v in saved.items() if k != "summary"})
         return JSONResponse(clean({"ok": True, "setup": saved}))
 
     @app.delete("/api/v2/setups/{setup_id}")

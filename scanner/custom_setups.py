@@ -38,6 +38,7 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from scanner.alert_provenance import custom_revision
 from scanner.conditions import (
     CATALOG, ConditionError, describe as describe_condition, normalize_condition,
 )
@@ -756,6 +757,7 @@ class CustomEvaluator:
             "rvol": rvol,
             # system-feed payload fields
             "setup": s["id"],
+            "detector_setup_revision": custom_revision(s),
             "setup_label": s["name"],
             "setup_color": s.get("color"),
             "custom": True,

@@ -192,6 +192,7 @@ class AlpacaFeed(DataFeed):
                 callback({
                     "symbol":    bar.symbol,
                     "timestamp": bar.timestamp,
+                    "source": "alpaca_minute_bar",
                     "open":      float(bar.open),
                     "high":      float(bar.high),
                     "low":       float(bar.low),

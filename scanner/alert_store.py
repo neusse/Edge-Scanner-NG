@@ -69,6 +69,9 @@ class AlertStore:
                                 alert["market_timestamp"] = alert.get("timestamp")
                                 alert["emitted_at"] = None
                                 alert["archive_write_ok"] = True
+                            alert.setdefault("detector_setup_revision", None)
+                            alert.setdefault("detector_revision", None)
+                            alert.setdefault("source_bar", None)
                             alerts.append(alert)
             except (OSError, json.JSONDecodeError) as exc:
                 log.warning("AlertStore: failed to read %s: %s", path.name, exc)

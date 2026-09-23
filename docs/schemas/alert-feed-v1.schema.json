@@ -57,6 +57,9 @@
         "market_timestamp": {"type": ["string", "null"], "format": "date-time"},
         "emitted_at": {"type": ["string", "null"], "format": "date-time"},
         "source": {"enum": ["system", "custom", "unknown"]},
+        "detector_setup_revision": {"type": ["string", "null"]},
+        "detector_revision": {"type": ["string", "null"]},
+        "source_bar": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/source_bar"}]},
         "archive_write_ok": {"type": "boolean"},
         "symbol": {"type": ["string", "null"]},
         "setup": {"type": ["string", "null"]},
@@ -73,6 +76,19 @@
         "stop_pct": {"type": ["number", "null"]},
         "warnings": {"type": "array"},
         "trigger_evidence": {"type": "array"}
+      },
+      "additionalProperties": true
+    },
+    "source_bar": {
+      "type": "object",
+      "required": ["id", "source", "symbol", "timeframe", "market_timestamp", "complete"],
+      "properties": {
+        "id": {"type": ["string", "null"]},
+        "source": {"enum": ["schwab_chart_equity", "schwab_quote_derived", "alpaca_minute_bar", "unknown"]},
+        "symbol": {"type": ["string", "null"]},
+        "timeframe": {"const": "1m"},
+        "market_timestamp": {"type": ["string", "null"], "format": "date-time"},
+        "complete": {"type": ["boolean", "null"]}
       },
       "additionalProperties": true
     }

@@ -474,6 +474,7 @@ class SchwabFeed(DataFeed):
                     callback({
                         "symbol":    c.get("key"),
                         "timestamp": pd.to_datetime(int(c["7"]), unit="ms", utc=True),
+                        "source": "schwab_chart_equity",
                         "open":      float(c["2"]),
                         "high":      float(c["3"]),
                         "low":       float(c["4"]),
