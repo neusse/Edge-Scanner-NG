@@ -5,6 +5,19 @@ import type {
   YahooScreenerCatalog, YahooScreenerPayload, ScreenerConfig, UniverseSelectionPayload,
 } from '../types'
 
+export interface QuoteObservation {
+  symbol: string; stream_id: string; bid: number | null; ask: number | null; last: number | null
+  spread: number | null; spread_bps: number | null; midpoint: number | null
+  bid_market_ms: number | null; ask_market_ms: number | null; last_market_ms: number | null
+  bid_age_ms: number | null; ask_age_ms: number | null; last_age_ms: number | null
+  bid_size: number | null; ask_size: number | null; receipt_ms: number | null
+  quality: string; coverage: string; delayed: boolean | null; source: string; tier: string; session: string
+}
+export interface QuoteSample {
+  time_ms: number; market_ms: number | null; bid: number | null; ask: number | null
+  last: number | null; spread: number | null; spread_bps: number | null; quality: string; seq: number
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
   if (!res.ok) {
@@ -45,6 +58,9 @@ export const api = {
   events: (since: number, limit = 200) => json<EventsPayload>(`/api/v2/events?since=${since}&limit=${limit}`),
   snapshot: (symbols: string[]) =>
     json<SnapshotPayload>(`/api/v2/snapshot?symbols=${encodeURIComponent(symbols.join(','))}`),
+  quote: (symbol: string) => json<QuoteObservation>(`/api/v2/quotes/${encodeURIComponent(symbol)}`),
+  quoteHistory: (symbol: string, limit = 600) =>
+    json<{ symbol: string; resolution: string; samples: QuoteSample[] }>(`/api/v2/quotes/${encodeURIComponent(symbol)}/history?limit=${limit}`),
   state: (symbol: string) => json<StockInfo>(`/api/v2/state/${encodeURIComponent(symbol)}`),
   setupCheck: (symbol: string, minutes: number) =>
     json<SetupCheckPayload>(`/api/v2/check/${encodeURIComponent(symbol)}?minutes=${minutes}`),

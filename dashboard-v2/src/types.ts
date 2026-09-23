@@ -66,7 +66,7 @@ export type SortDir = 'asc' | 'desc'
 export type LinkColor = 'none' | 'red' | 'green' | 'blue' | 'yellow' | 'purple'
 export const LINK_COLORS: Exclude<LinkColor, 'none'>[] = ['red', 'green', 'blue', 'yellow', 'purple']
 
-export type WindowType = 'scanner' | 'chart' | 'toplist' | 'screener' | 'news' | 'stockinfo' | 'watchlist' | 'clock' | 'setupcheck'
+export type WindowType = 'scanner' | 'chart' | 'quotes' | 'toplist' | 'screener' | 'news' | 'stockinfo' | 'watchlist' | 'clock' | 'setupcheck'
 /** alert producers on the unified feed */
 export type FeedId = 'system' | 'custom'
 export type ToneName = 'ping' | 'chime' | 'buzz' | 'off'
@@ -124,6 +124,8 @@ export interface ChartConfig extends WindowBase {
   extended: boolean
   overlays: ChartOverlays
 }
+
+export interface QuotesConfig extends WindowBase { type: 'quotes'; symbol: string | null }
 
 export type ToplistName =
   | 'rvol' | 'gainers_close' | 'losers_close' | 'gainers_open' | 'losers_open'
@@ -189,7 +191,7 @@ export interface ClockConfig extends WindowBase { type: 'clock'; showSpy: boolea
 export interface SetupCheckConfig extends WindowBase { type: 'setupcheck'; symbol: string | null; minutes: number }
 
 export type WindowConfig =
-  | ScannerConfig | ChartConfig | ToplistConfig | ScreenerConfig | NewsConfig
+  | ScannerConfig | ChartConfig | QuotesConfig | ToplistConfig | ScreenerConfig | NewsConfig
   | StockInfoConfig | WatchlistConfig | ClockConfig | SetupCheckConfig
 
 export interface Screen {

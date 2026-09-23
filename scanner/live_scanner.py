@@ -253,6 +253,12 @@ class LiveScanner:
                 Passed explicitly rather than sniffed from the payload.
         """
         eng = self._profiles
+        quote_book = getattr(self.feed, "quote_book", None)
+        quote = quote_book.get(state.symbol) if quote_book is not None else None
+        if quote is not None:
+            # The exact observation used by a spread gate travels with the alert.
+            # It is independent of the bar's market timestamp and price.
+            alert["quote"] = quote
         if eng is None:
             return True
         try:
@@ -272,7 +278,7 @@ class LiveScanner:
                                bar=bar, session=session,
                                direction=alert.get("direction"),
                                fundamentals=self._fundamentals_for(state.symbol),
-                               regime=self._regime)
+                               regime=self._regime, quote=quote)
             res = eng.check(cp, ctx, cache)
             alert["universe_profile"] = res.to_json()
             alert["profile_hash"] = res.hash

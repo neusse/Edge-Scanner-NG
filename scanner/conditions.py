@@ -92,6 +92,7 @@ class ConditionCtx:
     direction: Optional[str] = None             # the candidate alert's direction
     fundamentals: Optional[dict] = None         # scanner.fundamentals row, may be None
     regime: Optional[Any] = None                # MarketRegime, for market_align
+    quote: Optional[dict] = None                 # shared QuoteBook snapshot, when available
 
     @property
     def dir_sign(self) -> float:
@@ -1057,6 +1058,28 @@ _add(ConditionDef(
     unit="bool", ops=("gte",), default_op="gte", default_value=1.0, min=0, max=1, step=1,
     params=(ParamDef("from", "Active from", 600, 570, 960, 5, "min ET",
                      "Minutes past midnight ET. 600 = 10:00."),),
+))
+
+
+def _spread_bps(c: ConditionCtx, opt: str, p: dict) -> Optional[float]:
+    q = c.quote or {}
+    if q.get("quality") != "valid" or q.get("delayed") is not False:
+        return None
+    age_limit = float(p.get("max_age_ms", 2000))
+    if any(q.get(f"{side}_age_ms") is None or q[f"{side}_age_ms"] > age_limit
+           for side in ("bid", "ask")):
+        return None
+    return q.get("spread_bps")
+
+
+_add(ConditionDef(
+    "spread_bps", "Live bid/ask spread", "Price & levels",
+    "Current Schwab Level One ask minus bid, divided by midpoint, in basis points. "
+    "Fails closed for missing, stale, delayed, invalid, locked or crossed quotes. "
+    "Both sides must be within the configured market-time age; this is not depth or slippage.",
+    "dynamic", _spread_bps, unit="bps", ops=("lte", "lt", "gte", "gt"),
+    default_op="lte", default_value=20.0, min=0, max=10000, step=0.1,
+    params=(ParamDef("max_age_ms", "Maximum side age", 2000, 100, 60000, 100, "ms"),),
 ))
 
 

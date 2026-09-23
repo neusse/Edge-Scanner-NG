@@ -73,6 +73,7 @@ def client(tmp_path: Path):
     from fastapi import FastAPI
     from scanner.api_v2 import mount_v2_static, register_v2_routes
     app = FastAPI()
+    app.state.edge = app_state
     register_v2_routes(app, app_state, layouts_dir=tmp_path / "layouts", watchlists_path=tmp_path / "wl.json",
                        universe_selection_path=tmp_path / "selection.json", yahoo_screener=FakeYahooScreener(),
                        fundamentals_path=tmp_path / "fund.json", news_client=fake_news,
@@ -308,6 +309,33 @@ def test_v2_clock_and_state_and_snapshot(client: TestClient):
     assert client.get("/api/v2/state/NOPE").status_code == 404
     snap = client.get("/api/v2/snapshot?symbols=AAA,BBB,NOPE").json()
     assert set(snap["rows"]) == {"AAA", "BBB"} and snap["rows"]["BBB"]["price"] == 94.0
+
+
+def test_quote_read_history_updates_and_snapshot_are_shared(client: TestClient):
+    from scanner.quote_state import QuoteBook
+    from types import SimpleNamespace
+    book = QuoteBook()
+    client.app.state.edge.feed = SimpleNamespace(quote_book=book)
+    t = 1_780_000_000_000
+    book.ingest("AAA", {"bid": (100, t, 3), "ask": (100.02, t, 4),
+                        "last": (100.01, t, 2)}, receipt_ms=t + 50, delayed=False)
+    assert client.get("/api/v2/quotes/AAA").json()["bid"] == 100
+    assert client.get("/api/v2/quotes/AAA/history?limit=1").json()["samples"][0]["ask"] == 100.02
+    assert client.get("/api/v2/quotes/updates?since=0").json()["updates"][0]["last_market_ms"] == t
+    assert client.get("/api/v2/snapshot?symbols=AAA").json()["rows"]["AAA"]["quote"]["bid"] == 100
+    assert client.get("/api/v2/quotes/HELD").status_code == 404
+
+
+def test_quote_watch_endpoint_validates_and_keeps_held_symbols(client: TestClient):
+    from types import SimpleNamespace
+    watched = []
+    def watch(symbols):
+        watched[:] = symbols
+        return {"watched": symbols, "budget_used": len(symbols), "budget_cap": 3000}
+    client.app.state.edge.feed = SimpleNamespace(watch_quotes=watch)
+    assert client.put("/api/v2/quotes/watch", json={"symbols": ["HELD"]}).json()["watched"] == ["HELD"]
+    assert watched == ["HELD"]
+    assert client.put("/api/v2/quotes/watch", json={"symbols": "HELD"}).status_code == 400
 
 
 def test_v2_toplists_events_news_meta(client: TestClient):

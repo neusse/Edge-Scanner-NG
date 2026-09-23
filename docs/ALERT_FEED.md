@@ -2,6 +2,8 @@
 
 Edge Scanner publishes observations, **not orders or permission to trade**. A trading application owns account state, duplicate suppression, market-hours checks, sizing, buying power, risk limits, order validation, and its own authorization policy. In particular, an `Exit Trade Watch` alert is a long-position exit observation, not an instruction to open a short.
 
+For market-timed bid/ask, last trade, spread, quote quality, and held-symbol watch registration, use the separate [live quote contract](QUOTE_FEED.md). Alert `market_timestamp` remains the bar/setup time, not a proof of current tradable liquidity. When a spread condition is configured, `alert.quote` holds the shared quote observation used by that gate.
+
 The machine-readable contract is [alert-feed-v1.schema.json](schemas/alert-feed-v1.schema.json); representative [system, custom, exit-watch and replay fixtures](../tests/fixtures/alert_feed_v1.json) are tested against it. The [reference consumer](../scripts/consume_alerts.py) logs alerts, reconnects, recovers and never submits orders.
 
 ## Endpoints and connection lifecycle

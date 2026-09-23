@@ -6,18 +6,19 @@ import type { FeedId, ScannerConfig, ToplistName, WindowConfig, WindowType } fro
 export interface WindowSize { w: number; h: number; minW: number; minH: number; maxH?: number }
 
 export const WINDOW_TITLES: Record<WindowType, string> = {
-  scanner: 'Scanner', chart: 'Chart', toplist: 'Rankings', screener: 'Screener', news: 'News',
+  scanner: 'Scanner', chart: 'Chart', quotes: 'Bid / Ask', toplist: 'Rankings', screener: 'Screener', news: 'News',
   stockinfo: 'Stock Info', watchlist: 'Watchlist', clock: 'Clock', setupcheck: 'Setup check',
 }
 
 export const WINDOW_ICONS: Record<WindowType, string> = {
-  scanner: '◎', chart: '⌇', toplist: '≡', screener: '⌕', news: '¶', stockinfo: 'ℹ', watchlist: '☆', clock: '◷', setupcheck: '✓',
+  scanner: '◎', chart: '⌇', quotes: '⇵', toplist: '≡', screener: '⌕', news: '¶', stockinfo: 'ℹ', watchlist: '☆', clock: '◷', setupcheck: '✓',
 }
 
 // Pixels. `w: 0` means "full workspace width" (the clock strip).
 export const WINDOW_SIZES: Record<WindowType, WindowSize> = {
   scanner: { w: 940, h: 400, minW: 420, minH: 150 },
   chart: { w: 940, h: 400, minW: 420, minH: 180 },
+  quotes: { w: 760, h: 440, minW: 420, minH: 240 },
   toplist: { w: 460, h: 340, minW: 300, minH: 150 },
   screener: { w: 760, h: 440, minW: 480, minH: 240 },
   news: { w: 620, h: 340, minW: 420, minH: 150 },
@@ -75,6 +76,8 @@ export function windowDefaults(type: WindowType, id: string): WindowConfig {
     case 'chart':
       return { ...base(id, 'chart'), type: 'chart', symbol: null, timeframe: '5m', extended: false,
         overlays: { vwap: true, ema9: true, ema21: true, volume: true, sma50: false, sma100: false, sma200: false, pdHL: true, pmHL: true } }
+    case 'quotes':
+      return { ...base(id, 'quotes'), type: 'quotes', symbol: null }
     case 'toplist':
       return { ...base(id, 'toplist'), type: 'toplist', list: 'rvol', limit: 25, heat: true }
     case 'screener':
@@ -96,9 +99,9 @@ export function windowDefaults(type: WindowType, id: string): WindowConfig {
 
 /** Windows that follow a link group / publish symbols. */
 export const USES_LINK: Record<WindowType, boolean> = {
-  scanner: true, chart: true, toplist: true, screener: true, news: true, stockinfo: true, watchlist: true, clock: false, setupcheck: true,
+  scanner: true, chart: true, quotes: true, toplist: true, screener: true, news: true, stockinfo: true, watchlist: true, clock: false, setupcheck: true,
 }
 /** Windows that can make noise. */
 export const USES_SOUND: Record<WindowType, boolean> = {
-  scanner: true, chart: false, toplist: true, screener: false, news: false, stockinfo: false, watchlist: false, clock: false, setupcheck: false,
+  scanner: true, chart: false, quotes: false, toplist: true, screener: false, news: false, stockinfo: false, watchlist: false, clock: false, setupcheck: false,
 }

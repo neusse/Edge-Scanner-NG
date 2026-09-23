@@ -69,6 +69,7 @@ no login because nothing is exposed to the network.
   plugged in: see [adding a data provider](USER_GUIDE.md#adding-a-data-provider).
 - **A feed for other programs.** `ws://localhost:7777/ws/alerts`, with server-side filters by
   source, setup or symbol and a [versioned integration contract](docs/ALERT_FEED.md).
+  Market-timed bid/ask and spread are available through the [live quote contract](docs/QUOTE_FEED.md).
 - **Extensible.** Optional engine plugins can add built-in setups and data providers
   (`scanner/plugins.py`).
 
