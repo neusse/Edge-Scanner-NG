@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ColorType, createChart, LineSeries, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts'
 import type { QuotesConfig } from '../../types'
 import { api, type QuoteObservation, type QuoteSample } from '../../lib/api'
 import { useLinkedSymbol, linkSymbol } from '../../stores/linkStore'
 import { Empty, SymbolInput } from '../../components/primitives'
 import { readChartPalette } from '../../lib/theme'
+import { toSecET } from '../../lib/time'
 
 type Line = ISeriesApi<'Line'>
 type Refs = { chart: IChartApi; bid: Line; ask: Line; spread: Line }
@@ -12,23 +13,27 @@ type Point = { time: UTCTimestamp; value?: number }
 const EMPTY_HISTORY: QuoteSample[] = []
 const money = (v: number | null | undefined) => v == null ? '—' : `$${v.toFixed(2)}`
 const bps = (v: number | null | undefined) => v == null ? '—' : `${v.toFixed(1)} bps`
+const chartSecond = (ms: number) => toSecET(new Date(ms).toISOString())
 
-function points(samples: QuoteSample[], field: 'bid' | 'ask' | 'spread_bps'): Point[] {
-  const out: Point[] = []
+function chartData(samples: QuoteSample[]) {
+  const bid: Point[] = [], ask: Point[] = [], spread: Point[] = []
+  const byTime = new Map<number, QuoteSample>()
   let last = 0
   for (const row of samples) {
-    const time = Math.floor(row.time_ms / 1000)
+    const time = chartSecond(row.time_ms)
     if (time <= last) continue
-    if (last && time - last > 3) out.push({ time: (last + 1) as UTCTimestamp })
-    const value = row[field]
-    if (row.quality === 'valid' || row.quality === 'locked') {
-      out.push(value == null ? { time: time as UTCTimestamp } : { time: time as UTCTimestamp, value })
-    } else {
-      out.push({ time: time as UTCTimestamp })
+    if (last && time - last > 3) {
+      const gap = { time: (last + 1) as UTCTimestamp }
+      bid.push(gap); ask.push(gap); spread.push(gap)
     }
+    const point = (value: number | null) =>
+      (row.quality === 'valid' || row.quality === 'locked') && value != null
+        ? { time: time as UTCTimestamp, value } : { time: time as UTCTimestamp }
+    bid.push(point(row.bid)); ask.push(point(row.ask)); spread.push(point(row.spread_bps))
+    byTime.set(time, row)
     last = time
   }
-  return out
+  return { bid, ask, spread, byTime }
 }
 
 export function QuotesWindow({ win }: { win: QuotesConfig }) {
@@ -42,6 +47,7 @@ export function QuotesWindow({ win }: { win: QuotesConfig }) {
   const active = response?.symbol === symbol ? response : null
   const current = active?.current ?? null
   const history = active?.history ?? EMPTY_HISTORY
+  const plotted = useMemo(() => chartData(history), [history])
   const error = active?.error ?? null
   const hover = hoverState?.symbol === symbol ? hoverState.row : null
 
@@ -67,26 +73,26 @@ export function QuotesWindow({ win }: { win: QuotesConfig }) {
   useEffect(() => {
     const r = refs.current
     if (!r) return
-    r.bid.setData(points(history, 'bid'))
-    r.ask.setData(points(history, 'ask'))
-    r.spread.setData(points(history, 'spread_bps'))
+    r.bid.setData(plotted.bid)
+    r.ask.setData(plotted.ask)
+    r.spread.setData(plotted.spread)
     if (symbol && history.length && fitted.current !== symbol) {
       r.chart.timeScale().fitContent()
       fitted.current = symbol
     }
-  }, [history, symbol])
+  }, [history, plotted, symbol])
 
   useEffect(() => {
     const chart = refs.current?.chart
     if (!chart || !symbol) return
     const onMove = (param: { time?: unknown }) => {
       const sec = param.time === undefined ? null : Number(param.time)
-      const row = sec === null ? null : history.find(s => Math.floor(s.time_ms / 1000) === sec) ?? null
+      const row = sec === null ? null : plotted.byTime.get(sec) ?? null
       setHover({ symbol, row })
     }
     chart.subscribeCrosshairMove(onMove)
     return () => chart.unsubscribeCrosshairMove(onMove)
-  }, [history, symbol])
+  }, [plotted, symbol])
 
   useEffect(() => {
     if (!symbol) return
