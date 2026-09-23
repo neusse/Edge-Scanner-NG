@@ -1,6 +1,8 @@
 """Schwab as a full data provider: rate limiting, retries, batch history,
 the range-aware cache and the expired-login check. Offline (fake client)."""
+import os
 import sqlite3
+import time
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
@@ -91,6 +93,67 @@ def test_cache_is_reused_only_when_it_covers_the_requested_span(tmp_path):
     assert c.calls == ["AAA"]
     f.get_historical_daily("AAA", date(2025, 1, 5), date(2026, 1, 20))     # longer: refetch
     assert c.calls == ["AAA", "AAA"]
+
+
+@pytest.mark.parametrize("timeframe,folder", [("Day", "d"), ("5Min", "m")])
+def test_stale_history_fetches_only_missing_tail_and_keeps_existing_bars(tmp_path, timeframe, folder):
+    """A next-day restart must not request the whole 380/45-day history again."""
+    class RangeClient(_Client):
+        def price_history(self, symbol, **kw):
+            self.calls.append((kw["startDate"].date(), kw["endDate"].date()))
+            first, last = self.calls[-1]
+            candles = []
+            day = first
+            while day <= last:
+                if day.weekday() < 5:
+                    stamp = pd.Timestamp(day, tz="UTC") + pd.Timedelta(hours=15)
+                    candles.append({"datetime": int(stamp.timestamp() * 1000),
+                                    "open": 10, "high": 11, "low": 9,
+                                    "close": 10, "volume": 1000})
+                day += timedelta(days=1)
+            return _Resp(200, {"candles": candles})
+
+    client = RangeClient()
+    feed = _feed(tmp_path, client)
+    start, first_end, next_end = date(2026, 1, 5), date(2026, 1, 8), date(2026, 1, 9)
+    if timeframe == "Day":
+        first = feed.get_historical_daily("AAA", start, first_end)
+    else:
+        first = feed.get_historical_bars("AAA", timeframe, start, first_end)
+    cache = tmp_path / folder / "AAA.parquet"
+    old = time.time() - 86400 * 4
+    os.utime(cache, (old, old))
+    if timeframe == "Day":
+        second = feed.get_historical_daily("AAA", start, next_end)
+    else:
+        second = feed.get_historical_bars("AAA", timeframe, start, next_end)
+    assert client.calls == [(start, first_end), (first_end, next_end)]
+    assert len(second) == len(first) + 1
+    assert second.index.is_unique
+
+
+def test_today_written_file_does_not_hide_a_missing_session(tmp_path):
+    class Client(_Client):
+        def price_history(self, symbol, **kw):
+            self.calls.append((kw["startDate"].date(), kw["endDate"].date()))
+            return _Resp(200, _candles(kw["startDate"].date(), 1))
+
+    c = Client()
+    feed = _feed(tmp_path, c)
+    start = date(2026, 1, 5)
+    feed.get_historical_daily("AAA", start, start)
+    feed.get_historical_daily("AAA", start, date(2026, 1, 6))
+    assert c.calls == [(start, start), (start, date(2026, 1, 6))]
+
+
+def test_corrupt_cache_is_repaired_by_a_full_request(tmp_path):
+    c = _Client()
+    feed = _feed(tmp_path, c)
+    path = tmp_path / "d" / "AAA.parquet"
+    path.write_bytes(b"interrupted parquet write")
+    feed.get_historical_daily("AAA", date(2026, 1, 5), date(2026, 1, 9))
+    assert c.calls == ["AAA"]
+    assert pd.read_parquet(path).shape[0] == 10
 
 
 def test_snapshot_goes_through_the_limiter(tmp_path):

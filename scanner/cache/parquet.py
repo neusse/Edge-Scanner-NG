@@ -1,5 +1,7 @@
 from datetime import date
+import os
 from pathlib import Path
+import tempfile
 
 import pandas as pd
 
@@ -19,7 +21,15 @@ def load(symbol: str, cache_dir: Path) -> pd.DataFrame | None:
 
 def save(symbol: str, df: pd.DataFrame, cache_dir: Path) -> None:
     Path(cache_dir).mkdir(parents=True, exist_ok=True)
-    df.to_parquet(_path(symbol, cache_dir))
+    target = _path(symbol, cache_dir)
+    # A crash during a download must leave the previous, complete cache intact.
+    with tempfile.NamedTemporaryFile(dir=cache_dir, suffix=".parquet", delete=False) as tmp:
+        pending = Path(tmp.name)
+    try:
+        df.to_parquet(pending)
+        os.replace(pending, target)
+    finally:
+        pending.unlink(missing_ok=True)
 
 
 def is_fresh(symbol: str, cache_dir: Path, as_of: date) -> bool:

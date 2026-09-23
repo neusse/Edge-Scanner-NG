@@ -142,8 +142,13 @@ python scripts/run_live.py
 ```
 
 The first run builds the symbol universe and downloads daily and 5-minute history for every symbol, which
-can take 10-20 minutes depending on the universe size. Later runs reuse the local cache and only fetch
-what is new.
+can take 10-20 minutes depending on the universe size. Later runs inspect bar coverage against the NYSE
+session calendar, reuse current cache files, and request only missing historical ranges. The startup
+summary shows current, incremental, full and failed symbol counts, plus history requests and elapsed time.
+Use `start_scanner.bat --force-refresh-history` (or pass the same flag to `run_live.py`) to rebuild both
+history caches after a data-quality problem. This does not skip the separate today's-bars seeding step:
+Schwab still makes one request per seeded symbol on a mid-session start so session VWAP and levels are
+correct; its per-app request limit makes that step take time even when yesterday's history is current.
 
 ### Step 5 (optional): Install the sample setups
 
@@ -174,8 +179,8 @@ of daily history; extra flags are passed through, for example `./start_scanner.s
 
 1. **Universe**: loads `data/universe.csv`, rebuilding it when it is more than 7 days old.
 2. **Sector map**: maps symbols to their sector ETFs (refreshed weekly).
-3. **Daily history**: refreshes the daily bar cache.
-4. **Intraday history**: refreshes the 5-minute bar cache used for relative volume.
+3. **Daily history**: reuses or incrementally updates the daily bar cache.
+4. **Intraday history**: reuses or incrementally updates the 5-minute bar cache used for relative volume.
 5. **Warmup**: seeds every symbol's state from that history.
 6. **Live stream**: opens **one** Alpaca market-data WebSocket and starts scanning 1-minute bars.
 
@@ -191,6 +196,7 @@ Press **Ctrl+C** once in the terminal. The scanner shuts down cleanly.
 |---|---|---|
 | `--universe PATH` | `data/universe.csv` | Universe CSV to scan. An explicit file is used as is, with no age check or rebuild |
 | `--refresh-universe` | off | Force a universe rebuild even if it is fresh |
+| `--force-refresh-history` | off | Ignore daily and 5-minute caches and download the full requested history windows |
 | `--history-days N` | `60` | Calendar days of daily history. Use about 380 if you want 200-day averages and 52-week levels |
 | `--intraday-days N` | `20` | Days of 5-minute bars for the relative volume profile |
 | `--keep-days N` | `5` | Days of alerts kept on disk |
