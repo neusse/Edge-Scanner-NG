@@ -43,6 +43,17 @@ def _rth(n, start=570, vol=1000, up=True):
     return out
 
 
+def test_spread_condition_uses_shared_quote_and_fails_closed():
+    quote = {"quality": "valid", "delayed": False, "bid_age_ms": 500,
+             "ask_age_ms": 800, "spread_bps": 12.5}
+    ctx = C.ConditionCtx(state=SimpleNamespace(symbol="AMD"), quote=quote)
+    cond = C.normalize_condition({"id": "spread_bps", "op": "lte", "value": 20})
+    assert C.check(cond, ctx).passed
+    assert not C.check(cond, C.ConditionCtx(state=ctx.state, quote={**quote, "ask_age_ms": 3000})).passed
+    assert not C.check(cond, C.ConditionCtx(state=ctx.state, quote={**quote, "quality": "locked"})).passed
+    assert not C.check(cond, C.ConditionCtx(state=ctx.state, quote=None)).passed
+
+
 # ── level helpers: equivalence with the old inline math ──────────────────────
 
 def test_candle_rel_volume_matches_the_inline_math_it_replaced():

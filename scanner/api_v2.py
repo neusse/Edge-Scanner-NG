@@ -440,17 +440,56 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
 
     @app.get("/api/v2/snapshot")
     async def v2_snapshot(symbols: str = Query("")) -> JSONResponse:
-        want = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+        want = [s.strip().upper() for s in symbols.split(",") if s.strip()][:100]
         rows: dict[str, dict] = {}
+        book = getattr(app_state.feed, "quote_book", None)
         for sym in want:
             st = scanner._states.get(sym) if hasattr(scanner, "_states") else None
             if st is None:
                 continue
             try:
                 rows[sym] = state_to_snapshot(st)
+                if book is not None:
+                    rows[sym]["quote"] = book.get(sym)
             except Exception as exc:
                 log.debug("snapshot %s: %s", sym, exc)
         return JSONResponse(clean({"as_of": datetime.now(_ET).isoformat(timespec="seconds"), "rows": rows}))
+
+    @app.get("/api/v2/quotes/updates")
+    async def quote_updates(since: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=1000)) -> JSONResponse:
+        book = getattr(app_state.feed, "quote_book", None)
+        return JSONResponse(book.updates(since, limit) if book else
+                            {"seq": 0, "oldest_seq": 1, "gap": False, "updates": [],
+                             "error": "live quote feed unavailable"})
+
+    @app.get("/api/v2/quotes/{symbol}/history")
+    async def quote_history(symbol: str, limit: int = Query(600, ge=1, le=1800)) -> JSONResponse:
+        book = getattr(app_state.feed, "quote_book", None)
+        if book is None:
+            return JSONResponse({"error": "live quote feed unavailable"}, status_code=503)
+        return JSONResponse({"symbol": symbol.upper(), "stream_id": book.stream_id,
+                             "resolution": "latest observation per receipt second",
+                             "samples": book.history(symbol, limit)})
+
+    @app.get("/api/v2/quotes/{symbol}")
+    async def quote_current(symbol: str) -> JSONResponse:
+        book = getattr(app_state.feed, "quote_book", None)
+        row = book.get(symbol) if book else None
+        return JSONResponse(row if row else {"symbol": symbol.upper(), "coverage": "unavailable",
+                                                "quality": "missing"}, status_code=200 if row else 404)
+
+    @app.put("/api/v2/quotes/watch")
+    async def quote_watch(body: dict = Body(...)) -> JSONResponse:
+        fn = getattr(app_state.feed, "watch_quotes", None)
+        if fn is None:
+            return JSONResponse({"error": "live quote watch unavailable"}, status_code=503)
+        try:
+            symbols = body.get("symbols")
+            if not isinstance(symbols, list):
+                raise ValueError("symbols must be a list")
+            return JSONResponse(fn(symbols))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
 
     @app.get("/api/v2/state/{symbol}")
     async def v2_state(symbol: str) -> JSONResponse:

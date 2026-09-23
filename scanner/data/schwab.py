@@ -193,6 +193,12 @@ class SchwabFeed(DataFeed):
         self.quote_streamed_symbols: list[str] = []   # bars built from the live quote stream
         self.polled_symbols: list[str] = []           # bars built from polled quotes
         self.quote_bars = None                        # the QuoteBarBuilder, once streaming
+        from scanner.quote_state import QuoteBook
+        self.quote_book = QuoteBook()
+        self.quote_covered_symbols: list[str] = []
+        self._quote_lock = threading.RLock()
+        self._quote_base_symbols: set[str] = set()
+        self._quote_watched_symbols: set[str] = set()
 
     # ── Candle parsing ────────────────────────────────────────────────────────
 
@@ -512,10 +518,13 @@ class SchwabFeed(DataFeed):
         return None
 
     @staticmethod
-    def handle_quotes(raw, builder) -> None:
-        """Feed LEVELONE_EQUITIES updates to a QuoteBarBuilder. Fields: 3 last
-        price, 8 total volume, 9 last size (shares), 10 day high, 11 day low. The streamer sends only
-        the fields that changed, so any of them may be missing."""
+    def handle_quotes(raw, builder, book=None) -> None:
+        """Merge sparse Level One fields into the quote book and optional bar builder.
+
+        Bid/ask are 1/2, trade 3, quoted sizes 4/5, trade size 9, quote time
+        34, trade time 35 and individual side times 37/38 (epoch ms).
+        Quote-only changes reach the book even without a new trade or bar.
+        """
         try:
             msg = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
         except (TypeError, ValueError):
@@ -525,9 +534,27 @@ class SchwabFeed(DataFeed):
                 continue
             for c in block.get("content", []) or []:
                 try:
-                    builder.on_quote(c.get("key"), last=_num(c.get("3")), total_volume=_num(c.get("8")),
-                                     day_high=_num(c.get("10")), day_low=_num(c.get("11")),
-                                     last_size=_num(c.get("9")))
+                    sym = c.get("key")
+                    if book is not None and sym:
+                        fields = {}
+                        for side, price_key, time_key, size_key in (
+                            ("bid", "1", "37", "4"), ("ask", "2", "38", "5"),
+                            ("last", "3", "35", "9"),
+                        ):
+                            if any(k in c for k in (price_key, time_key, size_key)):
+                                # Field 34 is the combined quote clock, not a
+                                # defensible per-side clock when both sides are
+                                # present. Keep a side unverified if 37/38 is
+                                # absent instead of inventing its freshness.
+                                market_time = c.get(time_key)
+                                value = float("nan") if price_key in c and c[price_key] is None else c.get(price_key)
+                                fields[side] = (value, market_time, c.get(size_key))
+                        book.ingest(sym, fields, delayed=c.get("delayed"),
+                                    block_ms=block.get("timestamp"))
+                    if builder is not None:
+                        builder.on_quote(sym, last=_num(c.get("3")), total_volume=_num(c.get("8")),
+                                         day_high=_num(c.get("10")), day_low=_num(c.get("11")),
+                                         last_size=_num(c.get("9")))
                 except Exception as exc:
                     log.debug("Skipping malformed LEVELONE payload: %s", exc)
 
@@ -540,7 +567,8 @@ class SchwabFeed(DataFeed):
         order given (the universe file is sorted most liquid first):
 
             first 300     real bars from CHART_EQUITY
-            next 3,000    bars built from the live quote stream (LEVELONE_EQUITIES)
+            next slots   bars built from LEVELONE_EQUITIES; its 3,000 slots also
+                         cover the first 300 CHART_EQUITY symbols
             the rest      bars built from REST quotes polled every POLL_SECONDS
 
         See scanner/data/quote_bars.py for how a bar is built from quotes and how
@@ -570,9 +598,19 @@ class SchwabFeed(DataFeed):
         cap = self.CHART_EQUITY_CAP
         self.streamed_symbols = list(symbols[:cap])
         rest = list(symbols[cap:])
-        self.quote_streamed_symbols = rest[: self.LEVELONE_CAP] if synthetic else []
-        self.polled_symbols = rest[self.LEVELONE_CAP:] if synthetic else []
+        quote_room = max(0, self.LEVELONE_CAP - len(self.streamed_symbols))
+        self.quote_streamed_symbols = rest[:quote_room] if synthetic else []
+        self.polled_symbols = rest[quote_room:] if synthetic else []
         self.unstreamed_symbols = [] if synthetic else rest
+        # Quote coverage is independent of bar tier. The chart-bar symbols need
+        # Level One too, and held symbols can be added later on this stream.
+        with self._quote_lock:
+            self.quote_covered_symbols = list(dict.fromkeys(symbols))[:self.LEVELONE_CAP]
+            self._quote_base_symbols = set(self.quote_covered_symbols)
+            for sym in self.quote_covered_symbols:
+                self.quote_book.cover(sym)
+            for sym in symbols[self.LEVELONE_CAP:]:
+                self.quote_book.cover(sym, status="cap_exceeded")
         self.quote_bars = builder = QuoteBarBuilder(_emit)
         tiers_lock = threading.Lock()
         for sym in self.quote_streamed_symbols:
@@ -596,17 +634,21 @@ class SchwabFeed(DataFeed):
                         self.unstreamed_symbols = over + self.unstreamed_symbols
                         self._warn_cap(chart_cap)
             quote_cap = self.parse_symbol_cap(raw, "LEVELONE_EQUITIES")
-            if quote_cap is not None and quote_cap < len(self.quote_streamed_symbols):
+            if quote_cap is not None and quote_cap < len(self.quote_covered_symbols):
                 with tiers_lock:
-                    over = self.quote_streamed_symbols[quote_cap:]
-                    self.quote_streamed_symbols = self.quote_streamed_symbols[:quote_cap]
+                    with self._quote_lock:
+                        over_covered = self.quote_covered_symbols[quote_cap:]
+                        self.quote_covered_symbols = self.quote_covered_symbols[:quote_cap]
+                    for sym in over_covered:
+                        self.quote_book.coverage(sym, "cap_exceeded")
+                    over = [sym for sym in self.quote_streamed_symbols if sym not in self.quote_covered_symbols]
+                    self.quote_streamed_symbols = [sym for sym in self.quote_streamed_symbols if sym in self.quote_covered_symbols]
                     for sym in over:
                         builder.track(sym, grace=self.POLL_SECONDS + 5.0)
                     self.polled_symbols = over + self.polled_symbols
                 log.warning("Schwab accepted %d quote-stream symbols; %d moved to polling", quote_cap, len(over))
             self.handle_message(raw, _emit)
-            if synthetic:
-                self.handle_quotes(raw, builder)
+            self.handle_quotes(raw, builder if synthetic else None, self.quote_book)
 
         if self.unstreamed_symbols:
             self._warn_cap(cap)
@@ -616,8 +658,9 @@ class SchwabFeed(DataFeed):
         _CHUNK = 250
         for i in range(0, len(self.streamed_symbols), _CHUNK):
             stream.send(stream.chart_equity(self.streamed_symbols[i : i + _CHUNK], "0,1,2,3,4,5,6,7,8"))
-        for i in range(0, len(self.quote_streamed_symbols), _CHUNK):
-            stream.send(stream.level_one_equities(self.quote_streamed_symbols[i : i + _CHUNK], "0,3,8,9,10,11"))
+        for i in range(0, len(self.quote_covered_symbols), _CHUNK):
+            stream.send(stream.level_one_equities(self.quote_covered_symbols[i : i + _CHUNK],
+                                                  "0,1,2,3,4,5,8,9,10,11,34,35,37,38"))
         log.info("Schwab: %d symbols on real bars, %d on streamed quotes, %d on polled quotes",
                  len(self.streamed_symbols), len(self.quote_streamed_symbols), len(self.polled_symbols))
         if synthetic and rest:
@@ -643,6 +686,14 @@ class SchwabFeed(DataFeed):
                             builder.on_quote(sym, last=_num(q.get("lastPrice")), total_volume=_num(q.get("totalVolume")),
                                              day_high=_num(q.get("highPrice")), day_low=_num(q.get("lowPrice")),
                                              last_size=_num(q.get("lastSize")))
+                            self.quote_book.ingest(sym, {
+                                side: (q.get(price_key), q.get(time_key), q.get(size_key))
+                                for side, price_key, time_key, size_key in (
+                                    ("bid", "bidPrice", "bidTime", "bidSize"),
+                                    ("ask", "askPrice", "askTime", "askSize"),
+                                    ("last", "lastPrice", "tradeTime", "lastSize"))
+                                if price_key in q
+                            }, source="schwab_rest", tier="poll", delayed=payload.get("delayed"))
                     except Exception as exc:
                         log.warning("Schwab quote poll failed for %d symbols: %s", len(batch), exc)
                 self._stop_evt.wait(max(0.5, self.POLL_SECONDS - (time.monotonic() - t0)))
@@ -658,8 +709,46 @@ class SchwabFeed(DataFeed):
             threading.Thread(target=_flush, daemon=True, name="schwab-quote-bars").start()
             threading.Thread(target=_poll, daemon=True, name="schwab-quote-poll").start()
 
+        was_active = None
         while not self._stop_evt.wait(1.0):
-            pass
+            active = bool(getattr(stream, "active", False))
+            if active != was_active:
+                self.quote_book.connection(active)
+                was_active = active
+
+    def watch_quotes(self, symbols: list[str]) -> dict:
+        """Replace external held-symbol watch set on the existing Schwab stream.
+
+        Callers should refresh their complete held-symbol set when it changes.
+        A maximum of 64 extra symbols prevents accidental provider-budget loss.
+        """
+        import re
+        normalized = [str(s).upper().strip() for s in symbols]
+        if len(normalized) > 64 or any(not re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", s) for s in normalized):
+            raise ValueError("watch list must contain at most 64 valid equity symbols")
+        requested = set(normalized)
+        with self._quote_lock:
+            old = self._quote_watched_symbols
+            add = sorted(requested - old - set(self.quote_covered_symbols))
+            remove = sorted(old - requested - self._quote_base_symbols)
+            if len(self.quote_covered_symbols) + len(add) > self.LEVELONE_CAP:
+                raise ValueError("Schwab Level One symbol budget exhausted")
+            stream = self._stream
+            if stream is None:
+                raise ValueError("Schwab stream is not started")
+            fields = "0,1,2,3,4,5,8,9,10,11,34,35,37,38"
+            if add:
+                stream.send(stream.level_one_equities(add, fields, command="ADD"))
+            if remove:
+                stream.send(stream.level_one_equities(remove, "0", command="UNSUBS"))
+            self._quote_watched_symbols = requested
+            self.quote_covered_symbols = [s for s in self.quote_covered_symbols if s not in remove] + add
+            for sym in add:
+                self.quote_book.cover(sym)
+            for sym in remove:
+                self.quote_book.coverage(sym, "not_watched")
+            return {"watched": sorted(requested), "stream_covered": sorted(requested & set(self.quote_covered_symbols)),
+                    "budget_used": len(self.quote_covered_symbols), "budget_cap": self.LEVELONE_CAP}
 
     def _warn_cap(self, cap: int) -> None:
         n, total = len(self.unstreamed_symbols), len(self.unstreamed_symbols) + len(self.streamed_symbols)
