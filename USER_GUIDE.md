@@ -534,6 +534,10 @@ you want a longer history.
 
 ## 9. For Developers: Alert Feed
 
+For trading-software integration, use the [versioned alert-feed contract](docs/ALERT_FEED.md),
+including event IDs, recovery, heartbeats, replay safety, schema and the read-only reference consumer.
+The brief endpoint description below is not a delivery guarantee.
+
 The scanner serves everything on port **7777**:
 
 - **REST API** under `/api/` (used by the dashboard). `GET /api/alerts` returns recent alerts, newest

@@ -1,0 +1,55 @@
+{
+  "system": {
+    "schema_version": 1, "type": "alert", "session_id": "fixture-live", "mode": "live",
+    "seq": 1, "event_id": "fixture-live:1",
+    "market_timestamp": "2026-09-23T14:31:00+00:00", "emitted_at": "2026-09-23T14:31:01+00:00",
+    "alert": {
+      "schema_version": 1, "event_id": "fixture-live:1", "session_id": "fixture-live", "seq": 1,
+      "mode": "live", "market_timestamp": "2026-09-23T14:31:00+00:00",
+      "emitted_at": "2026-09-23T14:31:01+00:00", "archive_write_ok": true,
+      "source": "system", "symbol": "AAPL", "setup": "HOD_BREAKOUT", "direction": "long",
+      "timestamp": "2026-09-23T10:31:00-04:00", "price": 200.5, "score": 82,
+      "trigger": "hod_breakout", "session": "rth", "suggested_stop": null, "warnings": []
+    }
+  },
+  "custom": {
+    "schema_version": 1, "type": "alert", "session_id": "fixture-live", "mode": "live",
+    "seq": 2, "event_id": "fixture-live:2",
+    "market_timestamp": "2026-09-23T14:32:00+00:00", "emitted_at": "2026-09-23T14:32:01+00:00",
+    "alert": {
+      "schema_version": 1, "event_id": "fixture-live:2", "session_id": "fixture-live", "seq": 2,
+      "mode": "live", "market_timestamp": "2026-09-23T14:32:00+00:00",
+      "emitted_at": "2026-09-23T14:32:01+00:00", "archive_write_ok": true,
+      "source": "custom", "custom": true, "symbol": "NVDA", "setup": "cs_orb_1",
+      "setup_label": "Opening Range Break", "direction": "long", "price": 220.75,
+      "trigger": "CS_cs_orb_1:orb", "entry_trigger": "orb", "score": 76,
+      "trigger_evidence": [{"trigger": "orb", "status": "fired_now"}], "context": {"rvol": 2.1}
+    }
+  },
+  "exit_watch": {
+    "schema_version": 1, "type": "alert", "session_id": "fixture-live", "mode": "live",
+    "seq": 3, "event_id": "fixture-live:3",
+    "market_timestamp": "2026-09-23T14:33:00+00:00", "emitted_at": "2026-09-23T14:33:01+00:00",
+    "alert": {
+      "schema_version": 1, "event_id": "fixture-live:3", "session_id": "fixture-live", "seq": 3,
+      "mode": "live", "market_timestamp": "2026-09-23T14:33:00+00:00",
+      "emitted_at": "2026-09-23T14:33:01+00:00", "archive_write_ok": true,
+      "source": "custom", "custom": true, "symbol": "MU",
+      "setup": "cs_exit_trade_watch_wfwk", "setup_label": "Exit Trade Watch",
+      "direction": "long", "price": 145.12, "score": 50,
+      "entry_trigger": "cross_below:ema9_5", "trigger": "CS_cs_exit_trade_watch_wfwk:cross_below:ema9_5",
+      "trigger_evidence": [{"trigger": "cross_below:ema9_5", "status": "fired_now"}]
+    }
+  },
+  "replay": {
+    "schema_version": 1, "type": "alert", "session_id": "fixture-replay", "mode": "replay",
+    "seq": 1, "event_id": "fixture-replay:1",
+    "market_timestamp": "2026-08-20T14:31:00+00:00", "emitted_at": "2026-09-23T14:31:01+00:00",
+    "alert": {
+      "schema_version": 1, "event_id": "fixture-replay:1", "session_id": "fixture-replay", "seq": 1,
+      "mode": "replay", "market_timestamp": "2026-08-20T14:31:00+00:00",
+      "emitted_at": "2026-09-23T14:31:01+00:00", "archive_write_ok": true,
+      "source": "custom", "symbol": "AMD", "setup": "cs_example", "direction": "long", "price": 150.0
+    }
+  }
+}

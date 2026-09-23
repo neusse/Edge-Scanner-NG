@@ -3,6 +3,7 @@ import json
 import logging
 from datetime import date, timedelta
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 log = logging.getLogger(__name__)
 
@@ -26,14 +27,16 @@ class AlertStore:
 
     # ── public API ────────────────────────────────────────────────────────────
 
-    def save(self, alert: dict) -> None:
-        """Append a single alert to today's file."""
+    def save(self, alert: dict) -> bool:
+        """Append a single alert to today's file; report whether it is durable."""
         path = self._dir / f"{date.today().isoformat()}.jsonl"
         try:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(alert) + "\n")
+            return True
         except OSError as exc:
             log.warning("AlertStore: failed to write alert: %s", exc)
+            return False
 
     def load_recent(self) -> list[dict]:
         """Return all alerts from the last keep_days days, oldest first."""
@@ -48,10 +51,25 @@ class AlertStore:
                 continue
             try:
                 with open(path, encoding="utf-8") as f:
-                    for line in f:
+                    for line_number, line in enumerate(f, 1):
                         line = line.strip()
                         if line:
-                            alerts.append(json.loads(line))
+                            alert = json.loads(line)
+                            # Legacy records predate the v1 envelope. Their
+                            # identity is stable for this archive location,
+                            # but their live/replay provenance is unknowable.
+                            if "event_id" not in alert:
+                                alert["event_id"] = "legacy:" + uuid5(
+                                    NAMESPACE_URL, f"{path.name}:{line_number}").hex
+                                alert["mode"] = "unknown"
+                                alert["schema_version"] = 1
+                                alert["session_id"] = "legacy"
+                                alert.setdefault("seq", line_number)
+                                alert.setdefault("source", "unknown")
+                                alert["market_timestamp"] = alert.get("timestamp")
+                                alert["emitted_at"] = None
+                                alert["archive_write_ok"] = True
+                            alerts.append(alert)
             except (OSError, json.JSONDecodeError) as exc:
                 log.warning("AlertStore: failed to read %s: %s", path.name, exc)
         log.info("AlertStore: loaded %d alerts from last %d days", len(alerts), self._keep_days)

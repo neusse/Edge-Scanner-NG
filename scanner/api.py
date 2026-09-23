@@ -178,8 +178,28 @@ def create_app(app_state: AppState) -> FastAPI:
     @app.get("/api/alerts")
     async def get_alerts(request: _Request, limit: int = 200) -> JSONResponse:
         """Recent alerts from the unified feed, newest first, same filters as the WebSocket."""
-        sub = Subscription.from_params(request.query_params)
+        try:
+            sub = Subscription.from_params(request.query_params)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         return JSONResponse({"alerts": app_state.hub.recent_for(sub, max(1, min(limit, 5000))), "filter": sub.describe()})
+
+    @app.get("/api/alerts/recover")
+    async def recover_alerts(request: _Request, after: str | None = None,
+                             limit: int = 500) -> JSONResponse:
+        """Oldest-first retained archive page after an event ID (410 if expired)."""
+        try:
+            sub = Subscription.from_params(request.query_params)
+            result = app_state.hub.recover_for(sub, after, max(1, min(limit, 500)))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        except LookupError:
+            return JSONResponse({"error": "cursor_not_found", "after": after}, status_code=410)
+        return JSONResponse(result)
+
+    @app.get("/api/feed/status")
+    async def get_feed_status() -> JSONResponse:
+        return JSONResponse(app_state.hub.status_snapshot())
 
     @app.get("/api/feed/clients")
     async def get_feed_clients() -> JSONResponse:

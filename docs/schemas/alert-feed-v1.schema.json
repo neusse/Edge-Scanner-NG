@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neusse.github.io/Edge-Scanner-NG/schemas/alert-feed-v1.schema.json",
+  "title": "Edge Scanner alert feed v1 frame",
+  "type": "object",
+  "required": ["schema_version", "type", "session_id", "mode", "emitted_at",
+               "event_id", "seq", "market_timestamp"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "type": {"enum": ["alert", "replay", "heartbeat", "status"]},
+    "session_id": {"type": "string", "minLength": 1},
+    "mode": {"enum": ["live", "replay"]},
+    "emitted_at": {"type": "string", "format": "date-time"},
+    "event_id": {"type": ["string", "null"], "minLength": 1},
+    "seq": {"type": "integer", "minimum": 0},
+    "market_timestamp": {"type": ["string", "null"], "format": "date-time"},
+    "alert": {"$ref": "#/$defs/alert"},
+    "alerts": {"type": "array", "items": {"$ref": "#/$defs/alert"}},
+    "filter": {"type": "object"},
+    "truncated": {"type": "boolean"},
+    "status": {"$ref": "#/$defs/status"}
+  },
+  "allOf": [
+    {"if": {"properties": {"type": {"const": "alert"}}},
+     "then": {"required": ["alert"], "properties": {
+       "event_id": {"type": "string", "minLength": 1}, "seq": {"minimum": 1}}}},
+    {"if": {"properties": {"type": {"const": "replay"}}},
+     "then": {"required": ["alerts", "filter", "truncated", "status"]}},
+    {"if": {"properties": {"type": {"enum": ["heartbeat", "status"]}}},
+     "then": {"required": ["status"]}}
+  ],
+  "additionalProperties": true,
+  "$defs": {
+    "status": {
+      "type": "object",
+      "required": ["state", "mode", "session_id", "latest_seq", "last_market_timestamp"],
+      "properties": {
+        "state": {"enum": ["warming_up", "connecting", "live", "stale", "stopping"]},
+        "mode": {"enum": ["live", "replay"]},
+        "session_id": {"type": "string", "minLength": 1},
+        "latest_seq": {"type": "integer", "minimum": 0},
+        "last_market_timestamp": {"type": ["string", "null"], "format": "date-time"},
+        "market_age_seconds": {"type": ["number", "null"], "minimum": 0}
+      },
+      "additionalProperties": true
+    },
+    "alert": {
+      "type": "object",
+      "required": ["schema_version", "event_id", "session_id", "seq", "mode",
+                   "market_timestamp", "emitted_at", "source", "archive_write_ok"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "event_id": {"type": "string", "minLength": 1},
+        "session_id": {"type": "string", "minLength": 1},
+        "seq": {"type": "integer", "minimum": 1},
+        "mode": {"enum": ["live", "replay", "unknown"]},
+        "market_timestamp": {"type": ["string", "null"], "format": "date-time"},
+        "emitted_at": {"type": ["string", "null"], "format": "date-time"},
+        "source": {"enum": ["system", "custom", "unknown"]},
+        "archive_write_ok": {"type": "boolean"},
+        "symbol": {"type": ["string", "null"]},
+        "setup": {"type": ["string", "null"]},
+        "setup_label": {"type": ["string", "null"]},
+        "trigger": {"type": ["string", "null"]},
+        "entry_trigger": {"type": ["string", "null"]},
+        "direction": {"enum": ["long", "short", "neutral", null]},
+        "score": {"type": ["number", "null"]},
+        "price": {"type": ["number", "null"]},
+        "session": {"type": ["string", "null"]},
+        "custom": {"type": "boolean"},
+        "context": {"type": ["object", "null"]},
+        "suggested_stop": {"type": ["number", "null"]},
+        "stop_pct": {"type": ["number", "null"]},
+        "warnings": {"type": "array"},
+        "trigger_evidence": {"type": "array"}
+      },
+      "additionalProperties": true
+    }
+  }
+}
