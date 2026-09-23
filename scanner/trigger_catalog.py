@@ -87,6 +87,7 @@ class TriggerDef:
     source: str = "native"               # native | system
     default_options: tuple[str, ...] = ()
     lifetime: str = "edge_rearm"        # event contract exposed to Setup Check clients
+    event_semantics: Optional[str] = None
 
     def to_json(self) -> dict:
         return {
@@ -100,6 +101,7 @@ class TriggerDef:
             "sessions": list(self.sessions), "source": self.source,
             "default_options": list(self.default_options),
             "lifetime": self.lifetime,
+            "eventSemantics": self.event_semantics,
         }
 
 
@@ -235,10 +237,16 @@ def _build_catalog() -> list[TriggerDef]:
                    sessions=("rth",), default_options=("5",)))
     add(TriggerDef("orb_breakout", "Opening range breakout", "Highs & lows",
                    "Price breaks over the high of the first candle of the timeframe after the open. Once per day.",
-                   "long", _ALL_TF, sessions=("rth",), default_options=("5",)))
+                   "long", _ALL_TF, sessions=("rth",), default_options=("5",),
+                   event_semantics="bar-close-cross"))
+    add(TriggerDef("orb_trade_cross", "Opening range trade cross", "Highs & lows",
+                   "First observed fresh Level One trade strictly crosses above a completed 5- or 15-minute opening range. Schwab only; once per day.",
+                   "long", _tf_options(5, 15), sessions=("rth",), default_options=("5",),
+                   event_semantics="trade-cross"))
     add(TriggerDef("orb_breakdown", "Opening range breakdown", "Highs & lows",
                    "Price breaks under the low of the first candle of the timeframe after the open. Once per day.",
-                   "short", _ALL_TF, sessions=("rth",), default_options=("5",)))
+                   "short", _ALL_TF, sessions=("rth",), default_options=("5",),
+                   event_semantics="bar-close-cross"))
 
     # ── Candles ──────────────────────────────────────────────────────────
     add(TriggerDef("bull_candle_close", "Bullish candle close", "Candles", "A candle of the timeframe closes green.",
@@ -413,6 +421,7 @@ EVENT_LIFETIMES: dict[str, str] = {
     "near_last_high": "approach_edge", "near_last_low": "approach_edge",
     "reject_last_high": "completed_candle", "reject_last_low": "completed_candle",
     "orb_breakout": "once_per_day", "orb_breakdown": "once_per_day",
+    "orb_trade_cross": "once_per_day",
     "bull_candle_close": "completed_candle", "bear_candle_close": "completed_candle",
     "bull_engulfing": "completed_candle", "bear_engulfing": "completed_candle",
     "bull_harami": "completed_candle", "bear_harami": "completed_candle",

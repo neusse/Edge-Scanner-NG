@@ -60,6 +60,8 @@
         "detector_setup_revision": {"type": ["string", "null"]},
         "detector_revision": {"type": ["string", "null"]},
         "source_bar": {"anyOf": [{"type": "null"}, {"$ref": "#/$defs/source_bar"}]},
+        "eventSemantics": {"enum": ["bar-close-cross", "trade-cross", null]},
+        "trade_cross": {"$ref": "#/$defs/trade_cross"},
         "archive_write_ok": {"type": "boolean"},
         "symbol": {"type": ["string", "null"]},
         "setup": {"type": ["string", "null"]},
@@ -84,13 +86,44 @@
       "required": ["id", "source", "symbol", "timeframe", "market_timestamp", "complete"],
       "properties": {
         "id": {"type": ["string", "null"]},
-        "source": {"enum": ["schwab_chart_equity", "schwab_quote_derived", "alpaca_minute_bar", "unknown"]},
+        "source": {"enum": ["schwab_chart_equity", "schwab_history_1m", "schwab_quote_derived", "alpaca_minute_bar", "alpaca_history_1m", "unknown"]},
         "symbol": {"type": ["string", "null"]},
         "timeframe": {"const": "1m"},
         "market_timestamp": {"type": ["string", "null"], "format": "date-time"},
         "complete": {"type": ["boolean", "null"]}
       },
       "additionalProperties": true
+    },
+    "trade_cross": {
+      "type": "object",
+      "required": ["trade_price", "trade_market_timestamp", "receipt_timestamp",
+                   "latency_ms", "opening_range", "source", "tier", "coverage",
+                   "quote_quality", "stream_id", "connection_epoch"],
+      "properties": {
+        "trade_price": {"type": "number", "exclusiveMinimum": 0},
+        "trade_market_timestamp": {"type": "string", "format": "date-time"},
+        "receipt_timestamp": {"type": "string", "format": "date-time"},
+        "latency_ms": {"type": "integer", "minimum": 0},
+        "opening_range": {
+          "type": "object",
+          "required": ["id", "interval_min", "high", "low", "start", "end", "bar_sources", "complete"],
+          "properties": {
+            "id": {"type": "string"},
+            "interval_min": {"enum": [5, 15]},
+            "high": {"type": "number"}, "low": {"type": "number"},
+            "start": {"type": "string", "format": "date-time"},
+            "end": {"type": "string", "format": "date-time"},
+            "bar_sources": {"type": "array", "items": {"enum": ["schwab_chart_equity", "schwab_history_1m"]}},
+            "complete": {"const": true}
+          }, "additionalProperties": true
+        },
+        "source": {"const": "schwab_levelone"},
+        "tier": {"const": "stream"},
+        "coverage": {"const": "live"},
+        "quote_quality": {"type": ["string", "null"]},
+        "stream_id": {"type": "string"},
+        "connection_epoch": {"type": "integer", "minimum": 0}
+      }, "additionalProperties": true
     }
   }
 }

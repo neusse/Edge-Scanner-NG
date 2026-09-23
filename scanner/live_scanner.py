@@ -24,6 +24,7 @@ from scanner.alert_sink import AlertSink
 from scanner.data.interface import DataFeed
 from scanner.conditions import ConditionCtx
 from scanner.market import MarketRegime, classify_market
+from scanner.orb_trade import OpeningRangeBook, OrbTradeCross
 from scanner.profiles import BarProfileCache, ProfileResult, profile_stats
 from scanner.recent_activity import RecentActivity, describe_check
 from scanner.state import SymbolState
@@ -69,6 +70,9 @@ class LiveScanner:
         # cost is not new: CustomEvaluator.on_bar already advanced these for
         # every symbol on every bar, before its own `not plan.keys` early out.
         self._series: dict[str, SymbolSeries] = {}
+        self._opening_ranges = OpeningRangeBook()
+        self._orb_trade = OrbTradeCross()
+        self._last_symbol_bar: dict[str, dict] = {}
         # Universe profiles. None until attach_profiles(); when absent every
         # alert passes, so this is inert unless deliberately wired up.
         self._profiles = None
@@ -120,6 +124,7 @@ class LiveScanner:
             sink = self._system_sink if self._system_sink is not None else self.sink
         self._custom_sink = sink
         self._custom_evaluator = evaluator
+        self.configure_trade_callback()
         evaluator.activity = self.activity
         # Hand it this scanner's series store so both read the same rings. Any
         # series the evaluator already built are merged in, then it stops owning
@@ -132,6 +137,13 @@ class LiveScanner:
         for sym, s in self._series.items():
             for tf, period in evaluator.plan.emas:
                 s.want_ema(tf, period)
+
+    def configure_trade_callback(self) -> None:
+        """Subscribe to raw trade handling only while a trade setup is active."""
+        if getattr(self.feed, "supports_trade_updates", False):
+            evaluator = self._custom_evaluator
+            self.feed.trade_callback = (
+                self._on_trade if evaluator is not None and evaluator.plan.trade_keys else None)
 
     # ── Warmup ────────────────────────────────────────────────────────────────
 
@@ -423,6 +435,8 @@ class LiveScanner:
         if before_opening_rvol is None and state.opening_rvol_m5 is not None:
             self._refresh_opening_rvol_ranks()
         session = self._advance_series(state, bar)
+        self._opening_ranges.on_bar(bar)
+        self._last_symbol_bar[state.symbol] = dict(bar)
         if self._custom_evaluator is not None:
             self._custom_evaluator.prime_bar(
                 state,
@@ -690,6 +704,8 @@ class LiveScanner:
         # state.on_bar: series.on_bar records the bar's VWAP, and this is the
         # same post-update value CustomEvaluator used to read.
         session = self._advance_series(state, bar)
+        self._opening_ranges.on_bar(bar)
+        self._last_symbol_bar[state.symbol] = dict(bar)
         if _t:
             _t1 = perf_counter_ns(); bar_timer.record("series", _t1 - _t0); _t0 = _t1
 
@@ -769,6 +785,62 @@ class LiveScanner:
             # a minute is the number that has to fit inside the bar cadence.
             bar_timer.record_bar(str(bar.get("timestamp", ""))[:16], _end - _bar0)
 
+    def _on_trade(self, event: dict) -> None:
+        """Evaluate only configured trade-cross ORBs from the existing stream."""
+        evaluator = self._custom_evaluator
+        if evaluator is None or self._custom_sink is None or not evaluator.plan.trade_keys:
+            return
+        symbol = str(event.get("symbol") or "").upper()
+        state = self._states.get(symbol)
+        context_bar = self._last_symbol_bar.get(symbol)
+        if state is None or context_bar is None:
+            return
+        try:
+            stamp = pd.Timestamp(int(event["trade_market_ms"]), unit="ms", tz="UTC")
+            day = stamp.tz_convert("America/New_York").strftime("%Y-%m-%d")
+        except (KeyError, TypeError, ValueError):
+            return
+        for interval in evaluator.plan.trade_keys:
+            opening = self._opening_ranges.completed(symbol, day, interval)
+            evidence = self._orb_trade.observe(event, opening, interval)
+            if evidence is None:
+                continue
+            for alert in evaluator.on_trade_cross(state, context_bar, interval, evidence):
+                # The completed bar is screening context. The alert's market
+                # timestamp and price are the raw trade observation instead.
+                if not self._passes_profile(alert, state, context_bar, "rth",
+                                            BarProfileCache(), "custom"):
+                    continue
+                if self._record_push(self._custom_sink.push(alert), alert, "custom", alert["setup"]):
+                    evaluator.accept_alert(alert)
+                    log.info("TRADE ORB %-6s  %-18s  %s  price=%.2f",
+                             symbol, alert["setup"], interval, alert["price"])
+
+    def trade_cross_status(self, symbol: str, interval: int) -> dict:
+        """Read-only per-symbol readiness; absence of an alert is not readiness."""
+        if not getattr(self.feed, "supports_trade_updates", False):
+            return {"state": "unavailable", "reason": "feed_has_no_trade_updates"}
+        now_et = pd.Timestamp.now(tz="America/New_York")
+        if not 9 * 60 + interval + 30 <= now_et.hour * 60 + now_et.minute < 16 * 60:
+            return {"state": "unavailable", "reason": "outside_rth_trade_window"}
+        day = now_et.strftime("%Y-%m-%d")
+        opening = self._opening_ranges.completed(symbol, day, interval)
+        if opening is None:
+            return {"state": "unavailable", "reason": "authoritative_range_incomplete"}
+        stream = getattr(self.feed, "_stream", None)
+        if stream is None or not bool(getattr(stream, "active", False)):
+            return {"state": "unavailable", "reason": "stream_disconnected",
+                    "opening_range": opening}
+        book = getattr(self.feed, "quote_book", None)
+        quote = book.get(symbol) if book is not None else None
+        if (quote is None or quote.get("coverage") != "live"
+                or quote.get("delayed") is not False or quote.get("quality") != "valid"):
+            return {"state": "unavailable", "reason": "stream_coverage_unavailable",
+                    "opening_range": opening}
+        generation = (quote.get("stream_id"), quote.get("connection_epoch"))
+        return {**self._orb_trade.status(symbol, day, interval, generation),
+                "opening_range": opening, "quote_quality": quote.get("quality")}
+
     def ranked_symbols(self) -> list[str]:
         """Loaded symbols, most liquid first (20-day average dollar volume).
 
@@ -800,6 +872,7 @@ class LiveScanner:
         all_symbols = ["SPY"] + [sym for sym in self.ranked_symbols() if sym != "SPY"]
         all_symbols += [sym for sym in getattr(self, "_sector_symbols", ()) if sym not in all_symbols]
         log.info("Connecting to live feed for %d symbols", len(all_symbols))
+        self.configure_trade_callback()
         self.feed.subscribe_minute_bars(all_symbols, self._on_bar)
 
     # ── Session reset ─────────────────────────────────────────────────────────
@@ -818,6 +891,9 @@ class LiveScanner:
             self._spy_state._reset_intraday()
         self._latest_spy_bar = None
         self._latest_sector_bars.clear()
+        self._opening_ranges.clear()
+        self._orb_trade.clear()
+        self._last_symbol_bar.clear()
         self._sector_session_bars.clear()
         self._regime = MarketRegime.NEUTRAL
         self.sink.clear()

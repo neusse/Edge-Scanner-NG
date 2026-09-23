@@ -48,7 +48,7 @@ from scanner.toplists import (
     FILTER_SCOPE, FILTERABLE_LISTS, TOPLIST_LABEL, TOPLISTS, ToplistEngine,
     assignment_key, member_predicate,
 )
-from scanner.trigger_catalog import catalog_json
+from scanner.trigger_catalog import BY_ID, catalog_json
 from scanner.universe_selection import stream_symbols
 from scanner.yahoo_screener import PRESETS as YAHOO_PRESETS, YahooScreener, YahooScreenerError
 
@@ -637,6 +637,7 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
                            "detector_revision": effective_revision(
                                base, eng.for_setup(s.code) if eng else None,
                                config_hash=settings.hash, settings_values=settings.modified())})
+        ev = v2.custom_eval
         custom = v2.setups.load_all()
         for c in custom:
             c["summary"] = summary_lines(c)
@@ -645,7 +646,18 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
             params = (eng.params_for(c.get("parameter_set")) if eng else []) + (c.get("parameters") or [])
             c["detector_setup_revision"] = base
             c["detector_revision"] = effective_revision(base, cp, params, settings.hash, settings.modified())
-        ev = v2.custom_eval
+            semantics = []
+            for trigger in c.get("triggers", []):
+                definition = BY_ID.get(trigger.get("id"))
+                semantic = definition.event_semantics if definition else None
+                trigger["eventSemantics"] = semantic
+                semantics.append(semantic)
+            c["eventSemantics"] = semantics[0] if semantics and len(set(semantics)) == 1 else None
+            if "trade-cross" in semantics:
+                c["tradeCrossCapability"] = (
+                    "configured" if c.get("enabled") and ev is not None
+                    and getattr(app_state.feed, "supports_trade_updates", False)
+                    else "unavailable")
         return {
             "system": system,
             "custom": custom,
@@ -659,6 +671,9 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
         if ev is not None:
             try:
                 ev.reload()
+                configure = getattr(scanner, "configure_trade_callback", None)
+                if callable(configure):
+                    configure()
             except Exception as exc:
                 log.warning("custom evaluator reload failed: %s", exc)
 
@@ -851,7 +866,16 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
         if ev is None:
             return JSONResponse(clean({"symbol": sym, "in_universe": True, "triggers": [],
                                        "message": "custom evaluator not attached (scanner started without it)"}))
-        return JSONResponse(clean(await asyncio.to_thread(ev.check, setup, state)))
+        result = await asyncio.to_thread(ev.check, setup, state)
+        trade_status = getattr(scanner, "trade_cross_status", None)
+        if callable(trade_status):
+            result["tradeCrossStatus"] = {
+                str(option): trade_status(sym, int(option))
+                for trigger in setup.get("triggers", [])
+                if trigger.get("id") == "orb_trade_cross"
+                for option in trigger.get("options", [])
+            }
+        return JSONResponse(clean(result))
 
     @app.get("/api/v2/check/{symbol}")
     async def v2_check_all(symbol: str, minutes: int = Query(5, ge=1, le=15)) -> JSONResponse:

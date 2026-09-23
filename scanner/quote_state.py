@@ -43,6 +43,7 @@ class QuoteBook:
                  max_updates=10000, stale_after_ms=10000):
         self.max_symbols = max_symbols
         self.stream_id = str(uuid.uuid4())
+        self.connection_epoch = 0
         self.history_per_symbol = history_per_symbol
         self.stale_after_ms = stale_after_ms
         self._lock = threading.RLock()
@@ -73,6 +74,8 @@ class QuoteBook:
     def connection(self, active: bool):
         """Mark stream interruption without making retained prices appear fresh."""
         with self._lock:
+            if not active:
+                self.connection_epoch += 1
             for row in self._rows.values():
                 if row["tier"] != "stream" or row["coverage"] in ("cap_exceeded", "not_watched"):
                     continue
@@ -179,7 +182,8 @@ class QuoteBook:
             quality = "valid"
         midpoint = (bid + ask) / 2 if bid is not None and ask is not None else None
         spread = ask - bid if midpoint is not None and ask >= bid else None
-        return {"symbol": row["symbol"], "stream_id": self.stream_id, **data,
+        return {"symbol": row["symbol"], "stream_id": self.stream_id,
+                "connection_epoch": self.connection_epoch, **data,
                 "bid_size": fields.get("bid", {}).get("size"),
                 "ask_size": fields.get("ask", {}).get("size"),
                 "last_size": fields.get("last", {}).get("size"),

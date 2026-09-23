@@ -142,6 +142,8 @@ _Asked = RequestedCoverage
 class SchwabFeed(DataFeed):
     """DataFeed implementation over the Schwab market-data API."""
 
+    supports_trade_updates = True
+
     def __init__(
         self,
         cache_dir: Path = _DEFAULT_DAILY_CACHE,
@@ -195,6 +197,7 @@ class SchwabFeed(DataFeed):
         self.quote_bars = None                        # the QuoteBarBuilder, once streaming
         from scanner.quote_state import QuoteBook
         self.quote_book = QuoteBook()
+        self.trade_callback = None  # set by LiveScanner before the single stream starts
         self.quote_covered_symbols: list[str] = []
         self._quote_lock = threading.RLock()
         self._quote_base_symbols: set[str] = set()
@@ -519,7 +522,7 @@ class SchwabFeed(DataFeed):
         return None
 
     @staticmethod
-    def handle_quotes(raw, builder, book=None) -> None:
+    def handle_quotes(raw, builder, book=None, on_trade=None) -> None:
         """Merge sparse Level One fields into the quote book and optional bar builder.
 
         Bid/ask are 1/2, trade 3, quoted sizes 4/5, trade size 9, quote time
@@ -536,6 +539,7 @@ class SchwabFeed(DataFeed):
             for c in block.get("content", []) or []:
                 try:
                     sym = c.get("key")
+                    snap = None
                     if book is not None and sym:
                         fields = {}
                         for side, price_key, time_key, size_key in (
@@ -550,8 +554,26 @@ class SchwabFeed(DataFeed):
                                 market_time = c.get(time_key)
                                 value = float("nan") if price_key in c and c[price_key] is None else c.get(price_key)
                                 fields[side] = (value, market_time, c.get(size_key))
-                        book.ingest(sym, fields, delayed=c.get("delayed"),
-                                    block_ms=block.get("timestamp"))
+                        snap = book.ingest(sym, fields, delayed=c.get("delayed"),
+                                           block_ms=block.get("timestamp"))
+                    # Sparse Level One updates retain prior price/time in the
+                    # book. Only a raw update carrying BOTH fields is a new
+                    # observed trade candidate; quote receipt is not trade time.
+                    if on_trade is not None and snap is not None and "3" in c and "35" in c:
+                        price, trade_ms = _num(c.get("3")), _num(c.get("35"))
+                        if (price is not None and trade_ms is not None
+                                and trade_ms > 1_000_000_000_000
+                                and snap.get("last_market_ms") == int(trade_ms)
+                                and snap.get("last") == price):
+                            on_trade({"symbol": sym, "price": price,
+                                      "trade_market_ms": int(trade_ms),
+                                      "receipt_ms": snap["receipt_ms"],
+                                      "stream_id": snap["stream_id"],
+                                      "connection_epoch": snap["connection_epoch"],
+                                      "source": snap["source"], "tier": snap["tier"],
+                                      "coverage": snap["coverage"],
+                                      "quality": snap["quality"],
+                                      "delayed": snap["delayed"]})
                     if builder is not None:
                         builder.on_quote(sym, last=_num(c.get("3")), total_volume=_num(c.get("8")),
                                          day_high=_num(c.get("10")), day_low=_num(c.get("11")),
@@ -649,7 +671,14 @@ class SchwabFeed(DataFeed):
                     self.polled_symbols = over + self.polled_symbols
                 log.warning("Schwab accepted %d quote-stream symbols; %d moved to polling", quote_cap, len(over))
             self.handle_message(raw, _emit)
-            self.handle_quotes(raw, builder if synthetic else None, self.quote_book)
+            def _trade(event: dict) -> None:
+                callback = getattr(self, "trade_callback", None)
+                if callback is not None:
+                    event["stream_active"] = bool(getattr(stream, "active", False))
+                    with emit_lock:
+                        callback(event)
+            self.handle_quotes(raw, builder if synthetic else None, self.quote_book,
+                               _trade if getattr(self, "trade_callback", None) is not None else None)
 
         if self.unstreamed_symbols:
             self._warn_cap(cap)

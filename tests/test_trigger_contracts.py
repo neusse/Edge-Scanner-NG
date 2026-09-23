@@ -16,7 +16,7 @@ def test_contract_matrix_has_an_explicit_row_and_lifetime_for_every_native_trigg
     from scanner.trigger_catalog import EVENT_LIFETIMES
 
     native = {trigger.id for trigger in CATALOG if trigger.source == "native"}
-    assert len(native) == 45
+    assert len(native) == 46
     assert set(EVENT_LIFETIMES) == native
     matrix = (Path(__file__).resolve().parents[1] / "docs" / "TRIGGER_CONTRACTS.md").read_text()
     for trigger_id in native:
@@ -27,7 +27,9 @@ def test_contract_matrix_has_an_explicit_row_and_lifetime_for_every_native_trigg
         assert describe(trigger_id, trigger.default_options[0] if trigger.default_options else "", {})
 
 
-@pytest.mark.parametrize("trigger", [t for t in CATALOG if t.source == "native"], ids=lambda t: t.id)
+@pytest.mark.parametrize("trigger", [t for t in CATALOG
+                                     if t.source == "native" and t.event_semantics != "trade-cross"],
+                         ids=lambda t: t.id)
 def test_every_native_trigger_keeps_identity_evidence_and_setup_check_aligned(trigger, tmp_path, monkeypatch):
     from scanner.custom_setups import CustomEvaluator, CustomSetupStore
     from scanner.trigger_catalog import Fire, _IMPL, trigger_key
@@ -110,7 +112,9 @@ def test_session_rollover_resets_once_memory_but_replay_can_prime_it():
     assert "event" not in series.mem
 
 
-@pytest.mark.parametrize("trigger", [t for t in CATALOG if t.source == "native"], ids=lambda t: t.id)
+@pytest.mark.parametrize("trigger", [t for t in CATALOG
+                                     if t.source == "native" and t.event_semantics != "trade-cross"],
+                         ids=lambda t: t.id)
 def test_first_live_bar_after_replay_preserves_trigger_memory_until_next_date(trigger, tmp_path, monkeypatch):
     from scanner.custom_setups import CustomEvaluator, CustomSetupStore
     from scanner.trigger_catalog import Fire, _IMPL

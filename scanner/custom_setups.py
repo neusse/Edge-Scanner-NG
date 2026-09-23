@@ -95,12 +95,19 @@ def _normalize_setup(raw: dict, *, existing_id: Optional[str] = None) -> dict:
     mode = str(raw.get("mode") or "or")
     if mode not in _MODES:
         raise SetupError("mode must be or / and / atleast")
+    if mode != "or" and any(isinstance(t, dict) and t.get("id") == "orb_trade_cross"
+                            for t in (raw.get("triggers") or [])):
+        raise SetupError("orb_trade_cross requires OR mode; intraminute AND windows are not supported")
     direction = str(raw.get("direction") or "all")
     if direction not in _DIRS:
         raise SetupError("direction must be all / long / short")
     alert_direction = str(raw.get("alert_direction") or "")
     if alert_direction not in _ALERT_DIRS:
         raise SetupError("alert_direction must be blank / long / short / neutral")
+    if any(isinstance(t, dict) and t.get("id") == "orb_trade_cross"
+           for t in (raw.get("triggers") or [])):
+        if direction == "short" or alert_direction not in ("", "long"):
+            raise SetupError("orb_trade_cross is long-only and cannot be labelled short or neutral")
     sessions = [s for s in (raw.get("sessions") or ["rth"]) if s in _SESSIONS] or ["rth"]
     size_hint = str(raw.get("size_hint") or "half")
     if size_hint not in _SIZES:
@@ -353,6 +360,7 @@ class _Plan:
     setups: list[dict]
     # (trigger id, option key) -> list of (setup index, trigger cfg)
     keys: dict[tuple[str, str], list[tuple[int, dict]]] = field(default_factory=dict)
+    trade_keys: dict[int, list[tuple[int, dict]]] = field(default_factory=dict)
     emas: set[tuple[int, int]] = field(default_factory=set)
 
 
@@ -373,6 +381,9 @@ def _compile(setups: list[dict]) -> _Plan:
             if tdef is None:
                 continue
             for o in (t.get("options") or [""]):
+                if t["id"] == "orb_trade_cross":
+                    plan.trade_keys.setdefault(int(o), []).append((i, t))
+                    continue
                 plan.keys.setdefault((t["id"], o), []).append((i, t))
                 # pre-register the EMAs a level/option needs so they seed from history
                 if t["id"] in ("cross_above", "cross_below", "back_to_ema") and o.startswith("ema") and not o.endswith("_d"):
@@ -647,6 +658,11 @@ class CustomEvaluator:
                 }
                 for instance_key, display_key, tcfg, fire in fired_here
             }
+            for item in current_evidence.values():
+                tid = item["trigger"].split(":", 1)[0]
+                semantic = BY_ID.get(tid).event_semantics if BY_ID.get(tid) else None
+                if semantic:
+                    item["eventSemantics"] = semantic
             evidence = current_evidence
             if s["mode"] in ("and", "atleast"):
                 seen = self._and_seen.setdefault((s["id"], sym), {})
@@ -694,9 +710,45 @@ class CustomEvaluator:
                 state, bar, et, s, k0, f0,
                 [item["trigger"] for item in evidence.values()], sess)
             alert["trigger_evidence"] = list(evidence.values())
+            tid = k0.split(":", 1)[0]
+            semantic = BY_ID.get(tid).event_semantics if BY_ID.get(tid) else None
+            if semantic:
+                alert["eventSemantics"] = semantic
             out.append(alert)
             if not defer_commit:
                 self.accept_alert(alert)
+        return out
+
+    def on_trade_cross(self, state: Any, bar: dict, interval: int,
+                       evidence: dict) -> list[dict]:
+        """Build alerts for a verified trade edge; never evaluate it as a bar."""
+        plan = self._plan
+        market_time = pd.Timestamp(evidence["trade_market_timestamp"])
+        et = market_time.tz_convert("America/New_York")
+        key = trigger_key("orb_trade_cross", str(interval))
+        out: list[dict] = []
+        for index, configured in plan.trade_keys.get(interval, []):
+            setup = plan.setups[index]
+            if "rth" not in setup.get("sessions", []) or setup.get("direction") == "short":
+                continue
+            repeat = int(setup.get("repeat_sec") or 0)
+            previous = self._last_fire.get((setup["id"], state.symbol))
+            if repeat and previous is not None and market_time.timestamp() - previous < repeat:
+                continue
+            fire = Fire("long", float(evidence["trade_price"]),
+                        f"{interval} Min opening range trade cross above {evidence['opening_range']['high']:.2f}")
+            alert = self._build_alert(state, bar, et, setup, key, fire, [key], "rth")
+            alert.update(timestamp=et.isoformat(), price=float(evidence["trade_price"]),
+                         trigger_value=float(evidence["trade_price"]),
+                         eventSemantics="trade-cross", trade_cross=dict(evidence),
+                         suggested_stop=None, stop_pct=None, stop_ok=None)
+            alert["trigger_evidence"] = [{"instance_key": _trigger_instance_key(
+                "orb_trade_cross", str(interval), configured.get("params")),
+                "trigger": key, "timestamp": et.isoformat(), "status": "fired_now",
+                "direction": "long", "value": float(evidence["trade_price"]),
+                "note": fire.note, "eventSemantics": "trade-cross",
+                "trade_cross": dict(evidence)}]
+            out.append(alert)
         return out
 
     def accept_alert(self, alert: dict) -> None:

@@ -580,6 +580,7 @@ def main() -> None:
                     "low":       float(row["low"]),
                     "close":     float(row["close"]),
                     "volume":    float(row["volume"]),
+                    "source": "schwab_history_1m" if args.feed == "schwab" else "alpaca_history_1m",
                 }, spy_bar_map.get(ts), sector_bars.get(ts))
             seeded_from_bars.add(sym)
         print(
@@ -672,6 +673,9 @@ def main() -> None:
     # setup=<custom id>, custom=true. The evaluator was attached before today's
     # bars were replayed; replace its temporary sink with the unified feed sink.
     scanner.attach_custom(custom_eval, custom_sink)
+    # The bounded WebSocket buffer may no longer include an early ORB alert;
+    # restore the once-per-day latch from the full retained archive instead.
+    scanner._orb_trade.restore(app_state.hub.store.load_recent())
     app_state.custom_eval = custom_eval
 
     # Universe profiles: the screen each setup is checked against before an

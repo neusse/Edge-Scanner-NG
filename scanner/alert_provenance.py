@@ -69,6 +69,8 @@ def source_bar(bar: dict) -> dict:
     raw_source = bar.get("source")
     source = ({"schwab_chart_equity": "schwab_chart_equity",
                "alpaca_minute_bar": "alpaca_minute_bar",
+               "schwab_history_1m": "schwab_history_1m",
+               "alpaca_history_1m": "alpaca_history_1m",
                "quotes": "schwab_quote_derived"}.get(raw_source) or "unknown")
     ts = pd.Timestamp(bar["timestamp"])
     market_time = ts.tz_convert("UTC").isoformat() if ts.tzinfo is not None else None
