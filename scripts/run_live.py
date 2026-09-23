@@ -691,6 +691,7 @@ def main() -> None:
 
     # ── 6. Connect ────────────────────────────────────────────────────────────
     _step(6, TOTAL_STEPS, "Connecting to live feed ...")
+    app_state.hub.set_status("connecting")
 
     def _on_stop(sig, frame):
         print("\n\nStopping ...", flush=True)
@@ -716,6 +717,7 @@ def main() -> None:
     _hodlod_hook = make_hodlod_hook(scanner, event_buffer)   # Dashboard V2; never raises
 
     def _on_bar_diag(bar: dict) -> None:
+        app_state.hub.record_market_bar(bar.get("timestamp"))
         _bar_count[0] += 1
         n = _bar_count[0]
         if n in (1, 50, 200) or n % 500 == 0:
@@ -730,6 +732,8 @@ def main() -> None:
         scanner.connect()
     except (KeyboardInterrupt, TimeoutError):
         pass
+    finally:
+        app_state.hub.set_status("stopping")
 
     # ── Session summary (after Ctrl-C) ────────────────────────────────────────
     # Capture alerts BEFORE reset_session: reset clears the sinks.

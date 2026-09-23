@@ -40,7 +40,8 @@ def test_subscription_from_params_and_matching():
     assert not t.matches({"trigger": "orb"})
     assert Subscription.from_params({"symbols": "aapl"}).matches({"symbol": "AAPL"})
     assert Subscription.from_params({"direction": "short"}).matches({"direction": "short"})
-    assert Subscription.from_params({"direction": "sideways"}).direction is None
+    with pytest.raises(ValueError, match="invalid direction"):
+        Subscription.from_params({"direction": "sideways"})
 
 
 def test_sanitize_nan_and_numpy():

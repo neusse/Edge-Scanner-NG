@@ -15,5 +15,6 @@ schwabdev>=4.0                  # only for DATA_PROVIDER=schwab (MIT, github.com
 
 # Tests (the FastAPI/Starlette test client needs httpx, or httpx2 on Starlette 1.x)
 pytest>=8.0.0
+jsonschema>=4.23.0
 httpx>=0.28.1
 httpx2
