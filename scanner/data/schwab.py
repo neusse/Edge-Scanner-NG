@@ -167,6 +167,20 @@ class SchwabFeed(DataFeed):
             self._client = client            # injected (tests)
         else:
             age = refresh_token_age_days()
+            registered_callback = os.environ.get("SCHWAB_CALLBACK_URL", "https://127.0.0.1")
+            callback_has_trailing_slash = registered_callback.endswith("/")
+            if callback_has_trailing_slash and age is None:
+                raise RuntimeError(
+                    "Schwabdev rejects the registered callback URL ending in '/'; no imported "
+                    "schwabdev token was found. Refresh the shared SCHWAB_TOKEN_PATH login "
+                    "with its original client and import it before starting Edge."
+                )
+            if callback_has_trailing_slash and age >= _REFRESH_TOKEN_DAYS - 61 / (24 * 60):
+                raise RuntimeError(
+                    "The shared Schwab login is due for renewal. Schwabdev cannot perform a "
+                    "new login with the registered callback URL ending in '/'. Renew the "
+                    "SCHWAB_TOKEN_PATH login with its original client before starting Edge."
+                )
             if age is not None and age >= _REFRESH_TOKEN_DAYS:
                 # schwabdev would otherwise stop at a console prompt waiting
                 # for a browser login, which hangs an unattended start.
@@ -186,7 +200,11 @@ class SchwabFeed(DataFeed):
             self._client = schwabdev.Client(
                 app_key=key,
                 app_secret=secret,
-                callback_url=os.environ.get("SCHWAB_CALLBACK_URL", "https://127.0.0.1"),
+                # Schwabdev rejects a trailing slash even when using an existing
+                # token. Its refresh-token grant omits redirect_uri; this shim
+                # is not suitable for a new authorization-code login.
+                callback_url=registered_callback.rstrip("/") if callback_has_trailing_slash
+                             else registered_callback,
             )
         self._stream = None
         self._stop_evt = threading.Event()
@@ -247,14 +265,31 @@ class SchwabFeed(DataFeed):
         ))
         return self._candles_to_df(resp.json())
 
-    @staticmethod
-    def _request(call):
-        """Rate-limited call with retry on 429 and 5xx. Raises on anything else."""
+    def _request(self, call):
+        """Rate-limited call; recover one stale REST token, then retry 429/5xx."""
         delay = 2.0
+        auth_retried = False
         for attempt in range(_RETRIES + 1):
             _LIMITER.acquire()
             resp = call()
             status = getattr(resp, "status_code", 200)
+            if status == 401 and not auth_retried:
+                # Another client may have refreshed the shared schwabdev DB
+                # while this client's session still holds an old auth header.
+                # The public method adopts that newer token (or refreshes an
+                # invalid one) without opening another market-data stream.
+                auth_retried = True
+                update = getattr(self._client, "update_tokens", None)
+                if callable(update):
+                    try:
+                        updated = update(force_access_token=True)
+                    except Exception as exc:
+                        log.warning("Schwab REST auth recovery failed (%s)", type(exc).__name__)
+                        updated = False
+                    if updated:
+                        _LIMITER.acquire()
+                        resp = call()
+                        status = getattr(resp, "status_code", 200)
             if status == 429 or status >= 500:
                 if attempt == _RETRIES:
                     resp.raise_for_status()

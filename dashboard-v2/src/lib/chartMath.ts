@@ -2,63 +2,18 @@ import type { Bar } from '../types'
 import { isPremarket } from './time.ts'
 
 export interface Pt { time: number; value: number }
-type TS = (t: string) => number
 
 /** Bar timestamps mark the opening; overlays only consume closed candles. */
 export function completedIntradayBars<T extends { t: string }>(bars: T[], minutes: number, now = Date.now()): T[] {
   return bars.filter(b => Date.parse(b.t) + minutes * 60_000 <= now)
 }
 
-/** Cumulative session VWAP over (h+l+c)/3 * v. Correct only for single-day bar sets. */
-export function calcVWAP(bars: Bar[], ts: TS): Pt[] {
-  let tpv = 0, vol = 0
-  return bars.map(b => {
-    tpv += ((b.h + b.l + b.c) / 3) * b.v
-    vol += b.v
-    return { time: ts(b.t), value: vol > 0 ? tpv / vol : b.c }
-  })
-}
-
-export function calcSMA(bars: Bar[], period: number, ts: TS): Pt[] {
-  const out: Pt[] = []
-  let sum = 0
-  for (let i = 0; i < bars.length; i++) {
-    sum += bars[i].c
-    if (i >= period) sum -= bars[i - period].c
-    if (i >= period - 1) out.push({ time: ts(bars[i].t), value: sum / period })
-  }
-  return out
-}
-
-export function calcEMA(bars: Bar[], period: number, ts: TS): Pt[] {
-  if (period < 1) return []
-  const k = 2 / (period + 1)
-  let prev: number | null = null
-  let seed = 0
-  let seedCount = 0
-  const out: Pt[] = []
-  for (let i = 0; i < bars.length; i++) {
-    const b = bars[i]
-    if (!Number.isFinite(b.c)) { prev = null; seed = 0; seedCount = 0; continue }
-    if (prev === null) {
-      seed += b.c
-      seedCount++
-      if (seedCount < period) continue
-      prev = seed / period
-    } else {
-      prev += k * (b.c - prev)
-    }
-    out.push({ time: ts(b.t), value: prev })
-  }
-  return out
-}
-
-/** Latest SMA value over the last `period` closes, or null. */
-export function smaLatest(bars: Bar[], period: number): number | null {
-  if (bars.length < period) return null
-  let s = 0
-  for (let i = bars.length - period; i < bars.length; i++) s += bars[i].c
-  return s / period
+/** Display only server-calculated study values for candles already closed on this chart. */
+export function visibleStudyPoints(
+  points: { t: string; value: number }[], closedBars: { t: string }[], toTime: (t: string) => number,
+): Pt[] {
+  const closedTimes = new Set(closedBars.map(b => toTime(b.t)))
+  return points.map(p => ({ time: toTime(p.t), value: p.value })).filter(p => closedTimes.has(p.time))
 }
 
 /** Premarket high/low from today's intraday bars (04:00-09:29 ET). */

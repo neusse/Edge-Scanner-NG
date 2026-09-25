@@ -431,7 +431,10 @@ def test_store_seeds_defaults_once(tmp_path):
     seeded = store.load_all()
     shipped = json.loads(_DEFAULTS_FILE.read_text(encoding="utf-8"))["setups"]
     assert len(seeded) == len(shipped)
-    assert all(s["source"] == "sample" and s["pending_filters"] == [] for s in seeded)
+    assert all(s["source"] == "sample" for s in seeded)
+    assert {s["id"]: s["pending_filters"] for s in seeded} == {
+        s["id"]: s.get("pending_filters", []) for s in shipped
+    }
     assert all(BY_ID.get(t["id"]) for s in seeded for t in s["triggers"])
     store.delete(seeded[0]["id"])
     assert len(CustomSetupStore(tmp_path / "custom").load_all()) == len(seeded) - 1   # no re-seed
@@ -617,10 +620,15 @@ def test_at_least_n_of_does_not_fire_on_one_of_three(tmp_path):
              {"id": "cross_above", "options": ["vwap"], "params": {}}]
     ev = _evaluator(tmp_path, _setup("cs_x", trigs, mode="atleast", min_triggers=3,
                                      direction="long", and_window_min=30))
+    from scanner.recent_activity import RecentActivity
+    ev.activity = RecentActivity()
     st = _state(symbol="AAA", prior_close=100.0)
     # Rising but never reaching the prior close, so that cross can never happen:
     # a new high of day and a VWAP cross are only two of the three.
     assert _run(ev, st, [95.0, 95.5, 96.0, 96.5, 97.0]) == []
+    waiting = [e for e in ev.activity.events("AAA", 0) if e["outcome"] == "waiting"]
+    assert waiting
+    assert all("triggers matched within 30 min" in e["reasons"][0] for e in waiting)
 
 
 def test_and_is_atleast_with_the_count_pinned_to_every_alert(tmp_path):
@@ -649,7 +657,7 @@ def test_mode_summary_says_how_many(tmp_path):
     from scanner.custom_setups import summary_lines
     s = normalize_setup(_setup("cs_x", [{"id": "hod", "options": ["high"], "params": {}}],
                                mode="atleast", min_triggers=2))
-    assert "At least 2 of the alerts" in summary_lines(s)["mode"]
+    assert "At least 2 of the triggers" in summary_lines(s)["mode"]
 
 
 def test_a_lazily_created_ema_matches_a_preregistered_one():

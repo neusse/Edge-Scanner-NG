@@ -70,6 +70,9 @@ no login because nothing is exposed to the network.
 - **A feed for other programs.** `ws://localhost:7777/ws/alerts`, with server-side filters by
   source, setup or symbol and a [versioned integration contract](docs/ALERT_FEED.md).
   Market-timed bid/ask and spread are available through the [live quote contract](docs/QUOTE_FEED.md).
+- **Offline alert replay.** Run the existing alert engine over a frozen historic
+  Schwab bar session without opening a market stream or writing to the live
+  alert archive. See [alert replay](docs/REPLAY.md).
 - **Extensible.** Optional engine plugins can add built-in setups and data providers
   (`scanner/plugins.py`).
 
@@ -115,6 +118,17 @@ On Windows, clone the repository and run `setup.bat`. It checks your Python and 
 installs everything, builds the dashboard and creates `.env`. Then add your keys to `.env` and run
 `start_scanner.bat`.
 
+For a shared Schwab login, set `SCHWAB_TOKEN_PATH` to the existing schwab-py token JSON before
+launching. `start_scanner.bat` synchronizes a newer login or fresher same-login access token into
+schwabdev's local database before starting Edge; it will not overwrite a newer schwabdev token with
+an older or expired shared access token. Edge keeps the sole Schwab stream. If another client refreshes
+access while Edge is running, Edge retries a REST 401 once after synchronizing its schwabdev client;
+chart history and other REST reads do not create another stream or fall back to Alpaca live data.
+The intraday chart loads its historical context once per symbol/timeframe each Eastern trading day,
+then overlays today's bars already seeded or received by Edge's single stream (including its
+quote-derived minute fallback). A temporarily unavailable history request can still show the
+current session's bars; those partial results are marked `coverage: session_only` by the API.
+
 By hand, or on macOS and Linux:
 
 ```bash
@@ -153,6 +167,9 @@ Open http://localhost:7777.
 You get two sample screens (Pre-Market and Price Action) so the dashboard is not a blank page. The
 first start downloads a year of daily bars and 20 days of 5-minute bars for the whole universe,
 which takes 10 to 20 minutes; later starts use the cache in `data/`.
+For a larger Schwab universe, an optional [after-close history refresh](USER_GUIDE.md#optional-after-close-history-refresh)
+moves incremental cache work out of the next morning. Schwab live streaming stops shortly after
+the official NYSE close rather than running through after-hours.
 
 Optional, to start from working examples instead of an empty setup list:
 
@@ -165,6 +182,11 @@ The full guide is [USER_GUIDE.md](USER_GUIDE.md).
 ## Architecture documentation
 
 The source-backed architecture set is published on GitHub Pages:
+
+For the scanner's saved alerts and what they mean, see the [Alert and setup reference](docs/SETUP_REFERENCE.md)
+and the [User Guide](USER_GUIDE.md#5-setups).
+The staged, no-lookahead cutover to Pandas TA Classic is tracked in the
+[indicator migration plan](docs/INDICATOR_MIGRATION.md); no live indicator math has switched yet.
 
 - [System architecture](https://neusse.github.io/Edge-Scanner-NG/architecture/edge-scanner-system.html)
 - [Alert data flow](https://neusse.github.io/Edge-Scanner-NG/architecture/alert-pipeline.html)

@@ -49,11 +49,16 @@ export const api = {
   // existing scanner endpoints (:7777)
   bars: (symbol: string, tf: string) =>
     json<{ bars: Bar[]; error?: string }>(`/api/bars/${encodeURIComponent(symbol)}/${tf}`).then(d => d.bars ?? []),
+  chartBars: (symbol: string, tf: string, extended: boolean) =>
+    json<{ bars: Bar[]; indicators: Record<string, { t: string; value: number }[]>; indicator_version: string; asof: string | null }>(
+      `/api/bars/${encodeURIComponent(symbol)}/${tf}?with_indicators=true&extended=${extended}`),
   premarket: () => json<PremarketPayload>('/api/premarket'),
   regime: () => json<{ regime: string }>('/api/regime'),
   // /api/v2
   capabilities: () => json<Record<string, boolean>>('/api/v2/capabilities'),
   clock: () => json<ClockInfo>('/api/v2/clock'),
+  replayStatus: () => json<{ position: number; total: number; paused: boolean; complete: boolean; speed: number }>('/api/replay/status'),
+  replayControl: (action: string, speed?: number) => post<{ position: number; total: number; paused: boolean; complete: boolean; speed: number }>('/api/replay/control', { action, speed }),
   toplist: (name: string, limit: number) => json<ToplistPayload>(`/api/v2/toplists/${name}?limit=${limit}`),
   events: (since: number, limit = 200) => json<EventsPayload>(`/api/v2/events?since=${since}&limit=${limit}`),
   snapshot: (symbols: string[]) =>

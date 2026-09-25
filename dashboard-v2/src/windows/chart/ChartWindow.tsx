@@ -8,7 +8,7 @@ import {
 import type { Bar, ChartConfig, ChartOverlays, ChartTimeframe } from '../../types'
 import { api } from '../../lib/api'
 import { toSecET, isExtended, etDate } from '../../lib/time'
-import { calcEMA, calcSMA, completedIntradayBars, pmHighLow, priorDayHL, type Pt } from '../../lib/chartMath'
+import { completedIntradayBars, pmHighLow, priorDayHL, visibleStudyPoints, type Pt } from '../../lib/chartMath'
 import { readChartPalette, THEME_EVENT, type ChartPalette } from '../../lib/theme'
 import { useLinkedSymbol, useLinkedAlert, linkSymbol } from '../../stores/linkStore'
 import { useSetups } from '../../stores/setupsStore'
@@ -46,18 +46,6 @@ async function getDaily(symbol: string): Promise<Bar[]> {
   return bars
 }
 
-/** Session VWAP that restarts every trading day (multi-day intraday frames). */
-function calcSessionVWAP(bars: Bar[]): Pt[] {
-  let tpv = 0, vol = 0, day = ''
-  return bars.map(b => {
-    const d = etDate(b.t)
-    if (d !== day) { day = d; tpv = 0; vol = 0 }
-    tpv += ((b.h + b.l + b.c) / 3) * b.v
-    vol += b.v
-    return { time: toSecET(b.t), value: vol > 0 ? tpv / vol : b.c }
-  })
-}
-
 type Line = ISeriesApi<'Line'>
 interface Refs {
   chart: IChartApi
@@ -88,18 +76,23 @@ export function ChartWindow({ win }: { win: ChartConfig }) {
   // its last result when the symbol changes, so without the key a slow fetch left
   // the old stock's candles under the new stock's name. Only a matching response
   // is drawn; until it arrives the chart is empty and says it is loading.
-  const dataKey = `${symbol}|${tf}`
+  const dataKey = `${symbol}|${tf}|${win.extended}`
   const { data: resp } = usePoll(
-    async (): Promise<{ key: string; bars: Bar[]; error: string | null }> => {
-      const key = `${symbol}|${tf}`
-      if (!symbol) return { key, bars: [], error: null }
-      try { return { key, bars: await api.bars(symbol, TF_API[tf]), error: null } }
-      catch (e) { return { key, bars: [], error: e instanceof Error ? e.message : String(e) } }
+    async (): Promise<{ key: string; bars: Bar[]; indicators: Record<string, { t: string; value: number }[]>; asof: string | null; error: string | null }> => {
+      const key = `${symbol}|${tf}|${win.extended}`
+      if (!symbol) return { key, bars: [], indicators: {}, asof: null, error: null }
+      try {
+        const chart = await api.chartBars(symbol, TF_API[tf], win.extended)
+        return { key, bars: chart.bars, indicators: chart.indicators, asof: chart.asof, error: null }
+      }
+      catch (e) { return { key, bars: [], indicators: {}, asof: null, error: e instanceof Error ? e.message : String(e) } }
     },
-    pollMs, !!symbol, [symbol, tf],
+    pollMs, !!symbol, [symbol, tf, win.extended],
   )
   const current = resp?.key === dataKey ? resp : null
   const bars = current?.bars ?? null
+  const indicators = current?.indicators ?? {}
+  const asof = current?.asof ?? null
   const error = current?.error ?? null
 
   useEffect(() => {
@@ -183,18 +176,18 @@ export function ChartWindow({ win }: { win: ChartConfig }) {
       s.applyOptions({ visible: on, color })
       s.setData(on ? data().map(p => ({ time: p.time as UTCTimestamp, value: p.value })) : [])
     }
-    const rth = session ? visibleBars.filter(b => !isExtended(b.t)) : visibleBars
     const tfMinutes: Partial<Record<ChartTimeframe, number>> = { '1m': 1, '5m': 5, '15m': 15, '30m': 30, '1H': 60, '4H': 240 }
-    const emaBars = tfMinutes[tf] ? completedIntradayBars(rth, tfMinutes[tf]) : rth
+    const closed = tfMinutes[tf] ? completedIntradayBars(visibleBars, tfMinutes[tf], asof ? Date.parse(asof) : Date.now()) : visibleBars
+    const study = (name: string): Pt[] => visibleStudyPoints(indicators[name] ?? [], closed, toSecET)
     // VWAP is the level the engine gates on: solid, 2px, labelled on the axis, restarts each day.
-    setLine('vwap', o.vwap && session, pal.vwap, () => calcSessionVWAP(rth), 2, LineStyle.Solid, 'VWAP')
-    setLine('ema9', o.ema9, pal.ema9, () => calcEMA(emaBars, 9, toSecET), 1, LineStyle.Solid, '9')
-    setLine('ema21', o.ema21, pal.ema21, () => calcEMA(emaBars, 21, toSecET), 1, LineStyle.Solid, '21')
+    setLine('vwap', o.vwap && session, pal.vwap, () => study('vwap'), 2, LineStyle.Solid, 'VWAP')
+    setLine('ema9', o.ema9, pal.ema9, () => study('ema9'), 1, LineStyle.Solid, '9')
+    setLine('ema21', o.ema21, pal.ema21, () => study('ema21'), 1, LineStyle.Solid, '21')
     // SMAs are period-based on the chart's own bars (SMA200 on 5m = 200 five-minute
     // bars, on 1D = 200 sessions), so intraday frames carry several days of history.
-    setLine('sma50', o.sma50, pal.sma50, () => calcSMA(visibleBars, 50, toSecET), 1, LineStyle.Solid, '50')
-    setLine('sma100', o.sma100, pal.sma100, () => calcSMA(visibleBars, 100, toSecET), 1, LineStyle.Solid, '100')
-    setLine('sma200', o.sma200, pal.sma200, () => calcSMA(visibleBars, 200, toSecET), 2, LineStyle.Solid, '200')
+    setLine('sma50', o.sma50, pal.sma50, () => study('sma50'), 1, LineStyle.Solid, '50')
+    setLine('sma100', o.sma100, pal.sma100, () => study('sma100'), 1, LineStyle.Solid, '100')
+    setLine('sma200', o.sma200, pal.sma200, () => study('sma200'), 2, LineStyle.Solid, '200')
 
     for (const pl of r.priceLines) r.candles.removePriceLine(pl)
     r.priceLines = []
@@ -246,7 +239,7 @@ export function ChartWindow({ win }: { win: ChartConfig }) {
       fitKeyRef.current = fitKey
     }
     hadDataRef.current = visibleBars.length > 0
-  }, [visibleBars, bars, daily, win.overlays, session, symbol, tf, win.extended, selAlert])
+  }, [visibleBars, bars, daily, indicators, asof, win.overlays, session, symbol, tf, win.extended, selAlert])
 
   const set = (patch: Partial<ChartConfig>) => useScreens.getState().updateWindow(win.id, patch)
   const toggleOverlay = (k: keyof ChartOverlays) => set({ overlays: { ...win.overlays, [k]: !win.overlays[k] } })

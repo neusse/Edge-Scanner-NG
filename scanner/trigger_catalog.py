@@ -29,6 +29,7 @@ from typing import Any, Callable, Optional
 import pandas as pd
 
 from scanner.indicators.ema_sma import SeededEMA
+from scanner.indicators.classic import calculate, candles_frame
 
 # 3 exists for the candle-size choice on Crossing above / below. It is session-only
 # like 1 and 2, and deliberately NOT in _ALL_TF, so the triggers that offer every
@@ -401,6 +402,19 @@ def _build_catalog() -> list[TriggerDef]:
                                                         ParamDef("close_pct", "Close in range", 70, 50, 100, 5, "%")),
                    sessions=("rth",), default_options=("up",)))
 
+    for study_id, label, _study, _column, default in _CLASSIC_TRIGGER_SPECS:
+        add(TriggerDef(
+            f"ta_{study_id}_cross", f"{label} crosses level", "Classic indicators",
+            f"On a completed candle, Pandas TA Classic {label} crosses the chosen level. "
+            "Re-arms only after crossing back. Warm-up candles cannot trigger.",
+            "both", _UPDOWN, "Direction",
+            params=(ParamDef("tf", "Timeframe", 5, 1, 60, 1, "min",
+                             choices=(1.0, 2.0, 5.0, 15.0, 30.0, 60.0)),
+                    ParamDef("level", "Crossing level", default, -1_000_000_000,
+                             1_000_000_000, 0.1)),
+            sessions=("rth",), default_options=("up",),
+        ))
+
     # ── built-in system setups, passed through ───────────────────────────
     from scanner import plugins
     for sys_setup in plugins.SYSTEM_SETUPS:
@@ -410,6 +424,16 @@ def _build_catalog() -> list[TriggerDef]:
                        "Use it to extend a system setup with extra triggers without changing the setup itself.",
                        d, sessions=("rth",), source="system"))
     return cat
+
+
+_CLASSIC_TRIGGER_SPECS = (
+    ("macd_hist", "MACD histogram", "macd", "histogram", 0.0),
+    ("rsi", "RSI", "rsi", "value", 50.0),
+    ("stoch_k", "Stochastic %K", "stoch", "k", 80.0),
+    ("cci", "CCI", "cci", "value", 100.0),
+    ("bb_percent_b", "Bollinger %B", "bbands", "percent_b", 1.0),
+    ("adx", "ADX", "adx", "value", 25.0),
+)
 
 
 EVENT_LIFETIMES: dict[str, str] = {
@@ -437,6 +461,8 @@ EVENT_LIFETIMES: dict[str, str] = {
     "gap": "once_per_day", "rvol_cross": "recross",
     "rs_spy": "recross", "momentum_burst": "qualifying_bar",
 }
+EVENT_LIFETIMES.update({f"ta_{sid}_cross": "completed_candle_recross"
+                        for sid, *_ in _CLASSIC_TRIGGER_SPECS})
 
 
 CATALOG: list[TriggerDef] = [
@@ -490,6 +516,7 @@ class SymbolSeries:
         self.partial: dict[int, Optional[dict]] = {tf: None for tf in TIMEFRAMES}
         self.completed: dict[int, bool] = {tf: False for tf in TIMEFRAMES}   # a candle completed on this bar
         self.emas: dict[tuple[int, int], _Ema] = {}
+        self._studies: dict[tuple[int, str, int], tuple[tuple, pd.DataFrame]] = {}
         self.daily: dict[str, Optional[float]] = {"ema9_d": None, "ema21_d": None, "ema50_d": None,
                                                   "hi_52w": None, "lo_52w": None, "days": 0}
         # completed sessions' highs and lows, oldest first, for N-day levels
@@ -513,13 +540,29 @@ class SymbolSeries:
         if e is None:
             e = self.emas[(tf, period)] = _Ema(period)
             # seed from candles already known for that timeframe
-            for c in self.candles[tf]:
-                if c.get("session", "rth") == "rth":
-                    c.setdefault("ema_at_close", {})[period] = e.push(c["close"])
+            candles = [c for c in self.candles[tf] if c.get("session", "rth") == "rth"]
+            for c, value in zip(candles, e.seed([c["close"] for c in candles])):
+                c.setdefault("ema_at_close", {})[period] = None if pd.isna(value) else float(value)
         return e
 
     def want_ema(self, tf: int, period: int) -> None:
         self.ema(tf, period)
+
+    def study(self, tf: int, name: str, length: int | None = None) -> pd.DataFrame:
+        """Classic study over completed candles, cached until that ring changes."""
+        cs = self.candles.get(tf)
+        if cs is None:
+            raise ValueError(f"unsupported timeframe: {tf}")
+        last = cs[-1] if cs else None
+        stamp = (len(cs), last.get("key") if last else None,
+                 last.get("close") if last else None)
+        key = (tf, name, int(length or 0))
+        cached = self._studies.get(key)
+        if cached is None or cached[0] != stamp:
+            result = calculate(candles_frame(list(cs)), name, length)
+            self._studies[key] = (stamp, result)
+            return result
+        return cached[1]
 
     def seed_daily(self, daily: Optional[pd.DataFrame]) -> None:
         if daily is None or daily.empty:
@@ -532,8 +575,7 @@ class SymbolSeries:
             return
         for key, period in (("ema9_d", 9), ("ema21_d", 21), ("ema50_d", 50)):
             e = _Ema(period)
-            for c in closes:
-                e.push(c)
+            e.seed(closes)
             self.daily[key] = e.value
         tail_h, tail_l = highs[-252:], lows[-252:]
         self.daily_highs, self.daily_lows = tail_h, tail_l
@@ -578,10 +620,10 @@ class SymbolSeries:
                 self.candles[tf].append(p)
                 self.partial[tf] = None
         for (tf, period), e in list(self.emas.items()):
-            self.emas[(tf, period)] = _Ema(period)
-            for c in self.candles[tf]:
-                if c.get("session", "rth") == "rth":
-                    c.setdefault("ema_at_close", {})[period] = self.emas[(tf, period)].push(c["close"])
+            tracker = self.emas[(tf, period)] = _Ema(period)
+            candles = [c for c in self.candles[tf] if c.get("session", "rth") == "rth"]
+            for c, value in zip(candles, tracker.seed([c["close"] for c in candles])):
+                c.setdefault("ema_at_close", {})[period] = None if pd.isna(value) else float(value)
 
     # ── live ──
     def on_bar(self, bar: dict, et_min: int, day: str, vwap: Optional[float]) -> str:
@@ -655,10 +697,8 @@ class SymbolSeries:
         return list(d)[-n:]
 
     def atr(self, tf: int, n: int = 20) -> Optional[float]:
-        cs = self.last_completed(tf, n)
-        if len(cs) < max(3, n // 2):
-            return None
-        return sum(c["high"] - c["low"] for c in cs) / len(cs)
+        values = self.study(tf, "atr", n)
+        return _f(values["value"].iloc[-1]) if not values.empty else None
 
     def swing(self, tf: int, lookback: int, side: str) -> Optional[float]:
         cs = self.last_completed(tf, lookback)
@@ -1787,6 +1827,35 @@ def _t_burst(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     if opt == "down" and cl <= o and big and (1 - pos) >= float(p["close_pct"]) / 100.0:
         return Fire("short", rng / atr, f"burst {rng / atr:.2f}x ATR")
     return None
+
+
+def _classic_cross_factory(study_id: str, label: str, study: str,
+                           column: str) -> TriggerFn:
+    def _cross(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
+        tf = int(p["tf"])
+        if tf not in c.series.completed or not c.series.completed[tf]:
+            return None
+        values = c.series.study(tf, study)
+        if len(values) < 2:
+            return None
+        before, after = _f(values[column].iloc[-2]), _f(values[column].iloc[-1])
+        if before is None or after is None:
+            return None
+        level = float(p["level"])
+        crossed = before <= level < after if opt == "up" else before >= level > after
+        if not crossed:
+            return None
+        candle_key = c.series.candles[tf][-1].get("key")
+        if not c.once(f"ta:{study_id}:{tf}:{level}:{opt}:{candle_key}"):
+            return None
+        direction = "long" if opt == "up" else "short"
+        return Fire(direction, after, f"{label} crossed {opt} {level:g} on {tf} min")
+    return _cross
+
+
+for _study_id, _label, _study, _column, _default in _CLASSIC_TRIGGER_SPECS:
+    _IMPL[f"ta_{_study_id}_cross"] = _classic_cross_factory(
+        _study_id, _label, _study, _column)
 
 
 # external pass-through: setup:*

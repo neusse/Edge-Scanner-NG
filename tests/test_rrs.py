@@ -83,12 +83,12 @@ def test_wilder_atr_flat_series():
 
 
 def test_wilder_atr_nan_warmup():
-    """First (length-1) values must be NaN."""
+    """Classic ATR needs one prior close before its smoothing window."""
     length = 5
     bars = _make_bars([100.0] * 20, spread=0.25)
     atr = wilder_atr(bars["high"], bars["low"], bars["close"], length=length)
-    assert atr.iloc[: length - 1].isna().all()
-    assert atr.iloc[length - 1 :].notna().all()
+    assert atr.iloc[:length].isna().all()
+    assert atr.iloc[length:].notna().all()
 
 
 # ---------------------------------------------------------------------------
@@ -114,9 +114,9 @@ def test_rrs_uses_canonical_wilder_atr_at_its_first_available_value():
     bench = pd.DataFrame({
         "high": [101.0] * 4, "low": [99.0] * 4, "close": [100.0] * 4,
     }, index=idx)
-    # Stock true ranges are 1, 2, 4, 2. ATR(3) seeds at 7/3 and then
-    # becomes 20/9. The stock's three-bar move is +1 and the bench is flat.
-    assert rrs_raw(stock, bench, length=3).iloc[-1] == pytest.approx(9 / 20)
+    # Classic ATR(3) first becomes valid on bar four: 8/3 here.
+    # The stock's three-bar move is +1 and the bench is flat.
+    assert rrs_raw(stock, bench, length=3).iloc[-1] == pytest.approx(3 / 8)
 
 
 def test_rrs_raw_strong_stock_positive():

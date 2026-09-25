@@ -186,8 +186,8 @@ def _normalize_setup(raw: dict, *, existing_id: Optional[str] = None) -> dict:
         "sessions": sessions,
         "repeat_sec": max(0, int(float(raw.get("repeat_sec") or 0))),
         "and_window_min": max(1, int(float(raw.get("and_window_min") or 5))),
-        # How many of the selected alerts must fire, for mode "atleast", e.g.
-        # "2 of these 3 alerts fired inside the window", which neither AND nor
+        # How many of the selected triggers must match, for mode "atleast", e.g.
+        # "2 of these 3 triggers matched inside the window", which neither AND nor
         # OR can express. AND is the same mechanism with the count pinned to all
         # of them, so this shares its rolling window.
         "min_triggers": max(1, int(float(raw.get("min_triggers") or 2))),
@@ -230,11 +230,11 @@ def summary_lines(setup: dict) -> dict:
     trig = [describe(t["id"], o, t.get("params") or {}) for t in setup.get("triggers", []) for o in (t.get("options") or [""])]
     return {
         "universe": "Only symbols in the scanner universe (data/universe.csv, built from the liquidity screen) are scanned.",
-        "mode": ("Any one of the alerts below fires the setup." if setup.get("mode") == "or"
-                 else f"At least {setup.get('min_triggers', 2)} of the alerts below must fire "
+        "mode": ("Any one of the triggers below fires the setup." if setup.get("mode") == "or"
+                 else f"At least {setup.get('min_triggers', 2)} of the triggers below must match "
                       f"within {setup.get('and_window_min', 5)} minutes."
                  if setup.get("mode") == "atleast"
-                 else f"All alerts below must fire within {setup.get('and_window_min', 5)} minutes."),
+                 else f"All triggers below must match within {setup.get('and_window_min', 5)} minutes."),
         "direction": (
             {"all": "Long and short alerts.", "long": "Long alerts only.", "short": "Short alerts only."}[
                 setup.get("direction", "all")]
@@ -676,7 +676,7 @@ class CustomEvaluator:
                     for t in s["triggers"] for o in (t.get("options") or [""])
                 }
                 have = sum(1 for k in need if k in seen)
-                # AND is "atleast" with the count pinned to every alert, so one
+                # AND is "atleast" with the count pinned to every trigger, so one
                 # branch serves both and they cannot drift apart.
                 want = len(need) if s["mode"] == "and" else min(
                     max(1, int(s.get("min_triggers", 2))), len(need))
@@ -684,7 +684,7 @@ class CustomEvaluator:
                     if self.activity is not None and fired_here:
                         self.activity.add(sym, ts, "custom", s["id"], fired_here[0][3].direction,
                                           "waiting", ", ".join(k for _, k, _, _ in fired_here),
-                                          [f"{have} of {want} alerts within "
+                                          [f"{have} of {want} triggers matched within "
                                            f"{s.get('and_window_min', 5):g} min"])
                     continue
                 evidence = {

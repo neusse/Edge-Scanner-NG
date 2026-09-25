@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { SetupTrigger, TriggerDef } from '../types'
 
-/** Two-pane picker: available alerts on the left (filter,
+/** Two-pane picker: available triggers on the left (filter,
  *  grouped by category, (?) shows the description), selected on the right. */
 export function TriggerPicker({ catalog, value, onChange, onClose }: {
   catalog: TriggerDef[]
@@ -65,13 +65,13 @@ export function TriggerPicker({ catalog, value, onChange, onClose }: {
     <div className="modal-back picker-back" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="modal picker wf-nodrag" role="dialog" aria-modal="true">
         <div className="modal-head">
-          <div className="modal-title">Select alerts</div>
+          <div className="modal-title">Select triggers</div>
           <span className="flex-spacer" />
           <button className="btn sm icon" title="Close (Esc)" onClick={onClose}>✕</button>
         </div>
         <div className="picker-body">
           <div className="picker-pane">
-            <div className="picker-pane-head">Available alerts <span className="faint">{catalog.length - selectedIds.size}</span></div>
+            <div className="picker-pane-head">Available triggers <span className="faint">{catalog.length - selectedIds.size}</span></div>
             <input className="input" placeholder="Filter" value={qa} onChange={e => setQa(e.target.value)} autoFocus />
             <div className="picker-list">
               {available.map(([cat, items]) => (
@@ -95,7 +95,7 @@ export function TriggerPicker({ catalog, value, onChange, onClose }: {
             <span className="faint" style={{ fontSize: 22 }}>←</span>
           </div>
           <div className="picker-pane">
-            <div className="picker-pane-head">Selected alerts <span className="faint">{value.length}</span></div>
+            <div className="picker-pane-head">Selected triggers <span className="faint">{value.length}</span></div>
             <input className="input" placeholder="Filter" value={qs} onChange={e => setQs(e.target.value)} />
             <div className="picker-list">
               {selected.map(t => {
@@ -111,7 +111,7 @@ export function TriggerPicker({ catalog, value, onChange, onClose }: {
                   </div>
                 )
               })}
-              {value.length === 0 && <div className="faint" style={{ padding: 10 }}>Click an alert on the left to add it.</div>}
+              {value.length === 0 && <div className="faint" style={{ padding: 10 }}>Click a trigger on the left to add it.</div>}
             </div>
           </div>
           {info && (

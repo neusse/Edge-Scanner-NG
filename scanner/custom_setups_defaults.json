@@ -1,13 +1,14 @@
 {
-  "_note": "Seeded into data/setups/custom/ on first run, only when that directory is empty. Sample custom setups to start from: edit, duplicate or delete them in Config > Setups. The sample library in setup_library.json is installed separately by scripts/install_setup_library.py.",
+  "_note": "Seeded into data/setups/custom/ only on first run when that directory is empty. Snapshot of the 2026-09-25 live setup definitions; edit, duplicate, or delete in Config > Setups. Runtime caches and settings remain local.",
   "setups": [
     {
       "id": "cs_5min_hod",
       "name": "5MIN HOD",
       "color": "#4caf50",
-      "enabled": true,
+      "enabled": false,
       "mode": "or",
       "direction": "long",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -22,21 +23,21 @@
             "5"
           ],
           "params": {
-            "lookback": 5.0
+            "lookback": 5
           },
           "repeat_sec": 0
         }
       ],
       "notes": "Breaks over the highest high of the last 5 completed 5-minute candles while the last 5 minutes trade at least 2x the average of the 10 five-minute blocks before. Mirror of 5MIN LOD.",
-      "universe_profile": "up_liquid_movers",
+      "universe_profile": "",
       "parameters": [
         {
           "id": "rel_vol",
           "op": "gte",
-          "value": 200.0,
+          "value": 200,
           "option": "5",
           "params": {
-            "lookback": 10.0
+            "lookback": 10
           }
         }
       ],
@@ -51,6 +52,7 @@
       "enabled": true,
       "mode": "or",
       "direction": "all",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -66,12 +68,12 @@
             "low"
           ],
           "params": {
-            "days": 60.0
+            "days": 60
           },
           "repeat_sec": 0
         }
       ],
-      "notes": "The first intraday trade above the highest high, or below the lowest low, of the last 60 completed sessions. Each side alerts only once per trading day; retreats, recrosses, and later HOD/LOD moves do not repeat it. A true 60-session level needs about a year of daily history loaded (--history-days).",
+      "notes": "A 1-minute close above the highest high, or below the lowest low, of the last 60 completed sessions. A true 60-session level needs about a year of daily history loaded (--history-days).",
       "universe_profile": "up_liquid_movers",
       "parameters": [],
       "parameter_set": "",
@@ -80,11 +82,12 @@
     },
     {
       "id": "cs_compression_breakout",
-      "name": "Compression Breakout",
+      "name": "Tight Range Breakout",
       "color": "#3b82f6",
       "enabled": true,
       "mode": "or",
       "direction": "all",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -100,29 +103,29 @@
             "down"
           ],
           "params": {
-            "bars": 5.0,
+            "bars": 5,
             "max_range_pct": 0.4,
-            "width_unit": 1.0,
+            "width_unit": 1,
             "vol_mult": 1.2,
-            "tf": 5.0
+            "tf": 5
           },
           "repeat_sec": 0
         }
       ],
-      "notes": "A tight range that breaks with volume. The filters every alert must pass (relative volume, relative strength vs SPY, and more) are on the Parameters tab.",
+      "notes": "A break above or below a narrow range of five completed 5-minute candles, with a one-minute volume increase. This does not check for progressively shrinking candles, declining volume, or falling ATR. Current-bar checks are on the Checks tab.",
       "universe_profile": "up_liquid_movers",
       "parameters": [
         {
           "id": "rvol",
           "op": "gte",
-          "value": 1.0,
+          "value": 1,
           "option": "",
           "params": {}
         },
         {
           "id": "rrs_m5",
           "op": "gt",
-          "value": 0.0,
+          "value": 0,
           "option": "trade",
           "params": {}
         }
@@ -138,6 +141,7 @@
       "enabled": true,
       "mode": "or",
       "direction": "all",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -153,9 +157,9 @@
             "down"
           ],
           "params": {
-            "fast": 3.0,
-            "slow": 9.0,
-            "tf": 5.0
+            "fast": 3,
+            "slow": 9,
+            "tf": 5
           },
           "repeat_sec": 0
         }
@@ -166,21 +170,21 @@
         {
           "id": "rvol",
           "op": "gte",
-          "value": 1.0,
+          "value": 1,
           "option": "",
           "params": {}
         },
         {
           "id": "rrs_m5",
           "op": "gt",
-          "value": 0.0,
+          "value": 0,
           "option": "trade",
           "params": {}
         },
         {
           "id": "void_pct",
           "op": "gte",
-          "value": 1.0,
+          "value": 1,
           "option": "",
           "params": {}
         },
@@ -197,18 +201,18 @@
           "value": 1,
           "option": "",
           "params": {
-            "from": 600.0
+            "from": 600
           }
         },
         {
           "id": "ema_stack",
           "op": "gte",
-          "value": 0.0,
+          "value": 0,
           "option": "trade",
           "params": {
-            "fast": 8.0,
-            "slow": 21.0,
-            "tf": 5.0
+            "fast": 8,
+            "slow": 21,
+            "tf": 5
           }
         }
       ],
@@ -223,6 +227,7 @@
       "enabled": true,
       "mode": "and",
       "direction": "long",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -248,7 +253,7 @@
             "15"
           ],
           "params": {
-            "lookback": 5.0
+            "lookback": 5
           },
           "repeat_sec": 0
         },
@@ -258,8 +263,8 @@
             "5"
           ],
           "params": {
-            "ratio": 2.0,
-            "lookback": 10.0
+            "ratio": 2,
+            "lookback": 10
           },
           "repeat_sec": 0
         },
@@ -269,8 +274,8 @@
             "green"
           ],
           "params": {
-            "count": 3.0,
-            "tf": 5.0
+            "count": 3,
+            "tf": 5
           },
           "repeat_sec": 0
         }
@@ -289,6 +294,7 @@
       "enabled": true,
       "mode": "or",
       "direction": "all",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -306,7 +312,7 @@
             "prior_low"
           ],
           "params": {
-            "tf": 5.0
+            "tf": 5
           },
           "repeat_sec": 0
         },
@@ -319,7 +325,7 @@
             "prior_low"
           ],
           "params": {
-            "tf": 5.0
+            "tf": 5
           },
           "repeat_sec": 0
         }
@@ -330,10 +336,10 @@
         {
           "id": "rel_vol",
           "op": "gte",
-          "value": 150.0,
+          "value": 150,
           "option": "5",
           "params": {
-            "lookback": 10.0
+            "lookback": 10
           }
         }
       ],
@@ -345,9 +351,10 @@
       "id": "cs_lod_breakdown",
       "name": "LOD Breakdown",
       "color": "#ef5350",
-      "enabled": true,
+      "enabled": false,
       "mode": "and",
       "direction": "short",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -373,7 +380,7 @@
             "15"
           ],
           "params": {
-            "lookback": 5.0
+            "lookback": 5
           },
           "repeat_sec": 0
         },
@@ -383,8 +390,8 @@
             "5"
           ],
           "params": {
-            "ratio": 2.0,
-            "lookback": 10.0
+            "ratio": 2,
+            "lookback": 10
           },
           "repeat_sec": 0
         },
@@ -394,8 +401,8 @@
             "red"
           ],
           "params": {
-            "count": 3.0,
-            "tf": 5.0
+            "count": 3,
+            "tf": 5
           },
           "repeat_sec": 0
         }
@@ -411,9 +418,10 @@
       "id": "cs_lod_lows",
       "name": "5MIN LOD",
       "color": "#ef5350",
-      "enabled": true,
+      "enabled": false,
       "mode": "or",
       "direction": "short",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -428,7 +436,7 @@
             "5"
           ],
           "params": {
-            "lookback": 5.0
+            "lookback": 5
           },
           "repeat_sec": 0
         }
@@ -439,10 +447,10 @@
         {
           "id": "rel_vol",
           "op": "gte",
-          "value": 200.0,
+          "value": 200,
           "option": "5",
           "params": {
-            "lookback": 10.0
+            "lookback": 10
           }
         }
       ],
@@ -457,11 +465,13 @@
       "enabled": true,
       "mode": "or",
       "direction": "long",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
       "repeat_sec": 0,
       "and_window_min": 5,
+      "min_triggers": 2,
       "size_hint": "half",
       "triggers": [
         {
@@ -476,9 +486,9 @@
       "notes": "A new high of day. Deliberately bare: add parameters or a universe filter before relying on it.",
       "universe_profile": "up_liquid_movers",
       "parameters": [],
+      "parameter_set": "",
       "pending_filters": [],
-      "source": "sample",
-      "parameter_set": ""
+      "source": "sample"
     },
     {
       "id": "cs_new_lod",
@@ -487,11 +497,13 @@
       "enabled": true,
       "mode": "or",
       "direction": "short",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
       "repeat_sec": 0,
       "and_window_min": 5,
+      "min_triggers": 2,
       "size_hint": "half",
       "triggers": [
         {
@@ -506,9 +518,9 @@
       "notes": "A new low of day. Deliberately bare: add parameters or a universe filter before relying on it.",
       "universe_profile": "up_liquid_movers",
       "parameters": [],
+      "parameter_set": "",
       "pending_filters": [],
-      "source": "sample",
-      "parameter_set": ""
+      "source": "sample"
     },
     {
       "id": "cs_orb",
@@ -517,6 +529,7 @@
       "enabled": true,
       "mode": "or",
       "direction": "all",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -548,21 +561,21 @@
         {
           "id": "rvol",
           "op": "gte",
-          "value": 1.0,
+          "value": 1,
           "option": "",
           "params": {}
         },
         {
           "id": "rrs_m5",
           "op": "gt",
-          "value": 0.0,
+          "value": 0,
           "option": "trade",
           "params": {}
         },
         {
           "id": "void_pct",
           "op": "gte",
-          "value": 1.0,
+          "value": 1,
           "option": "",
           "params": {}
         },
@@ -579,7 +592,7 @@
           "value": 1,
           "option": "",
           "params": {
-            "from": 600.0
+            "from": 600
           }
         }
       ],
@@ -594,6 +607,7 @@
       "enabled": true,
       "mode": "or",
       "direction": "all",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -609,8 +623,8 @@
             "red"
           ],
           "params": {
-            "count": 3.0,
-            "tf": 5.0
+            "count": 3,
+            "tf": 5
           },
           "repeat_sec": 0
         }
@@ -621,28 +635,28 @@
         {
           "id": "time_et",
           "op": "gte",
-          "value": 1030.0,
+          "value": 1030,
           "option": "",
           "params": {}
         },
         {
           "id": "vwap_day_pct",
           "op": "gte",
-          "value": 100,
+          "value": 15,
           "option": "trade",
           "params": {
-            "tf": 5.0
+            "tf": 5
           }
         },
         {
           "id": "ema_hold",
           "op": "gte",
-          "value": 3.0,
+          "value": 3,
           "option": "trade",
           "params": {
-            "period": 9.0,
-            "lookback": 3.0,
-            "tf": 5.0
+            "period": 9,
+            "lookback": 3,
+            "tf": 5
           }
         }
       ],
@@ -657,6 +671,7 @@
       "enabled": true,
       "mode": "or",
       "direction": "all",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -671,7 +686,7 @@
             "vwap"
           ],
           "params": {
-            "tf": 5.0
+            "tf": 5
           },
           "repeat_sec": 0
         },
@@ -681,7 +696,7 @@
             "vwap"
           ],
           "params": {
-            "tf": 5.0
+            "tf": 5
           },
           "repeat_sec": 0
         }
@@ -692,21 +707,21 @@
         {
           "id": "rvol",
           "op": "gte",
-          "value": 1.0,
+          "value": 1,
           "option": "",
           "params": {}
         },
         {
           "id": "rrs_m5",
           "op": "gt",
-          "value": 0.0,
+          "value": 0,
           "option": "trade",
           "params": {}
         },
         {
           "id": "void_pct",
           "op": "gte",
-          "value": 1.0,
+          "value": 1,
           "option": "",
           "params": {}
         },
@@ -723,7 +738,7 @@
           "value": 1,
           "option": "",
           "params": {
-            "from": 600.0
+            "from": 600
           }
         }
       ],
@@ -738,6 +753,7 @@
       "enabled": true,
       "mode": "or",
       "direction": "all",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -752,8 +768,8 @@
             "3"
           ],
           "params": {
-            "tol_pct": 3.0,
-            "tol_unit": 1.0
+            "tol_pct": 3,
+            "tol_unit": 1
           },
           "repeat_sec": 0
         },
@@ -763,8 +779,8 @@
             "3"
           ],
           "params": {
-            "tol_pct": 3.0,
-            "tol_unit": 1.0
+            "tol_pct": 3,
+            "tol_unit": 1
           },
           "repeat_sec": 0
         }
@@ -775,36 +791,37 @@
         {
           "id": "rvol",
           "op": "gte",
-          "value": 1.0,
+          "value": 1,
           "option": "",
           "params": {}
         },
         {
           "id": "rrs_m5",
           "op": "gt",
-          "value": 0.0,
+          "value": 0,
           "option": "trade",
           "params": {}
         },
         {
           "id": "ema_stack",
           "op": "gte",
-          "value": 0.0,
+          "value": 0,
           "option": "trade",
           "params": {
-            "fast": 8.0,
-            "slow": 21.0,
-            "tf": 5.0
+            "fast": 8,
+            "slow": 21,
+            "tf": 5
           }
         },
         {
           "id": "vwap_hold",
           "op": "gte",
-          "value": 4.0,
+          "value": 4,
           "option": "trade",
           "params": {
-            "lookback": 5.0,
-            "tf": 5.0
+            "lookback": 5,
+            "tf": 5,
+            "margin": 0
           }
         }
       ],
@@ -819,6 +836,7 @@
       "enabled": true,
       "mode": "or",
       "direction": "short",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -833,11 +851,11 @@
             "resistance"
           ],
           "params": {
-            "tf": 5.0,
-            "lookback": 6.0,
+            "tf": 5,
+            "lookback": 6,
             "away_atr": 0.3,
             "band_atr": 0.1,
-            "max_dwell": 1.0
+            "max_dwell": 1
           },
           "repeat_sec": 0
         }
@@ -856,6 +874,7 @@
       "enabled": true,
       "mode": "or",
       "direction": "long",
+      "alert_direction": "",
       "sessions": [
         "rth"
       ],
@@ -870,11 +889,11 @@
             "support"
           ],
           "params": {
-            "tf": 5.0,
-            "lookback": 6.0,
+            "tf": 5,
+            "lookback": 6,
             "away_atr": 0.3,
             "band_atr": 0.1,
-            "max_dwell": 1.0
+            "max_dwell": 1
           },
           "repeat_sec": 0
         }
@@ -882,6 +901,460 @@
       "notes": "A sharp V into VWAP and straight back out. Price came from at least 0.3 daily ATR away, at most one earlier candle closed near VWAP, and the touch candle closed back clearly on the right side as a strong candle.",
       "universe_profile": "up_liquid_movers",
       "parameters": [],
+      "parameter_set": "",
+      "pending_filters": [],
+      "source": "sample"
+    },
+    {
+      "id": "cs_candidate_daily_atr_extension",
+      "name": "Daily ATR Extension",
+      "color": "#ef4444",
+      "enabled": true,
+      "mode": "or",
+      "direction": "all",
+      "alert_direction": "",
+      "sessions": [
+        "rth"
+      ],
+      "repeat_sec": 1800,
+      "and_window_min": 5,
+      "min_triggers": 2,
+      "size_hint": "half",
+      "triggers": [
+        {
+          "id": "new_candle_high",
+          "options": [
+            "5"
+          ],
+          "params": {
+            "since": 1
+          },
+          "repeat_sec": 0
+        },
+        {
+          "id": "new_candle_low",
+          "options": [
+            "5"
+          ],
+          "params": {
+            "since": 1
+          },
+          "repeat_sec": 0
+        }
+      ],
+      "notes": "Tuning draft: alerts when a stock already extended at least 2.0 daily ATRs from its prior-session EMA8 makes a new 5-minute high in the long direction or a new 5-minute low in the short direction.",
+      "universe_profile": "up_liquid_movers",
+      "parameters": [
+        {
+          "id": "atr_extension_d1",
+          "op": "gte",
+          "value": 2,
+          "option": "trade",
+          "params": {}
+        },
+        {
+          "id": "time_et",
+          "op": "gte",
+          "value": 1000,
+          "option": "",
+          "params": {}
+        }
+      ],
+      "parameter_set": "",
+      "pending_filters": [],
+      "source": "sample"
+    },
+    {
+      "id": "cs_candidate_ep_structure",
+      "name": "Episodic Pivot Structure (Draft)",
+      "color": "#22c55e",
+      "enabled": true,
+      "mode": "and",
+      "direction": "long",
+      "alert_direction": "",
+      "sessions": [
+        "rth"
+      ],
+      "repeat_sec": 0,
+      "and_window_min": 45,
+      "min_triggers": 2,
+      "size_hint": "half",
+      "triggers": [
+        {
+          "id": "gap",
+          "options": [
+            "up"
+          ],
+          "params": {
+            "min_pct": 4
+          },
+          "repeat_sec": 0
+        },
+        {
+          "id": "orb_breakout",
+          "options": [
+            "15"
+          ],
+          "params": {},
+          "repeat_sec": 0
+        }
+      ],
+      "notes": "Configuration-only EP structure: gap up at least 4%, 15-minute ORB within 45 minutes, RVOL at least 3x, and alert no later than 10:30 ET. It does not claim an Episodic Pivot because the setup catalog cannot require a verified earnings/news catalyst.",
+      "universe_profile": "up_liquid_movers",
+      "parameters": [
+        {
+          "id": "rvol",
+          "op": "gte",
+          "value": 3,
+          "option": "",
+          "params": {}
+        },
+        {
+          "id": "gap_pct",
+          "op": "gte",
+          "value": 4,
+          "option": "signed",
+          "params": {}
+        },
+        {
+          "id": "time_et",
+          "op": "lte",
+          "value": 1030,
+          "option": "",
+          "params": {}
+        }
+      ],
+      "parameter_set": "",
+      "pending_filters": [
+        "earnings or news catalyst confirmation",
+        "catalyst freshness and classification"
+      ],
+      "source": "sample"
+    },
+    {
+      "id": "cs_candidate_failed_break",
+      "name": "Failed Swing Break (Draft)",
+      "color": "#ab47bc",
+      "enabled": true,
+      "mode": "or",
+      "direction": "all",
+      "alert_direction": "",
+      "sessions": [
+        "rth"
+      ],
+      "repeat_sec": 900,
+      "and_window_min": 5,
+      "min_triggers": 2,
+      "size_hint": "half",
+      "triggers": [
+        {
+          "id": "reject_last_high",
+          "options": [
+            "5"
+          ],
+          "params": {
+            "lookback": 20
+          },
+          "repeat_sec": 0
+        },
+        {
+          "id": "reject_last_low",
+          "options": [
+            "5"
+          ],
+          "params": {
+            "lookback": 20
+          },
+          "repeat_sec": 0
+        }
+      ],
+      "notes": "Configuration-only failed-break proxy. A completed 5-minute candle pokes beyond the prior 20-candle swing level, closes back inside it, and has RVOL at least 1.5x. This is an honest same-candle rejection; the catalog cannot require an earlier bar to break the same stored level before the failure.",
+      "universe_profile": "up_liquid_movers",
+      "parameters": [
+        {
+          "id": "rvol",
+          "op": "gte",
+          "value": 1.5,
+          "option": "",
+          "params": {}
+        },
+        {
+          "id": "time_et",
+          "op": "gte",
+          "value": 945,
+          "option": "",
+          "params": {}
+        }
+      ],
+      "parameter_set": "",
+      "pending_filters": [
+        "ordered multi-bar break-failure-return state",
+        "persistent named breakout level"
+      ],
+      "source": "sample"
+    },
+    {
+      "id": "cs_candidate_high_rvol_orb",
+      "name": "Directional High-RVOL ORB",
+      "color": "#3b82f6",
+      "enabled": true,
+      "mode": "or",
+      "direction": "all",
+      "alert_direction": "",
+      "sessions": [
+        "rth"
+      ],
+      "repeat_sec": 0,
+      "and_window_min": 5,
+      "min_triggers": 2,
+      "size_hint": "half",
+      "triggers": [
+        {
+          "id": "orb_breakout",
+          "options": [
+            "5"
+          ],
+          "params": {},
+          "repeat_sec": 0
+        },
+        {
+          "id": "orb_breakdown",
+          "options": [
+            "5"
+          ],
+          "params": {},
+          "repeat_sec": 0
+        }
+      ],
+      "notes": "Evidence-backed 5-minute ORB: trade only in the direction of the completed opening candle, require opening volume at least 1.0x its historical 09:30 slot average, and restrict alerts to the top 20 opening-RVOL names after at least 80% of the universe is ranked.",
+      "universe_profile": "up_liquid_movers",
+      "parameters": [
+        {
+          "id": "opening_direction_m5",
+          "op": "gte",
+          "value": 1,
+          "option": "trade",
+          "params": {}
+        },
+        {
+          "id": "opening_rvol_m5",
+          "op": "gte",
+          "value": 1,
+          "option": "",
+          "params": {}
+        },
+        {
+          "id": "opening_rvol_rank",
+          "op": "lte",
+          "value": 20,
+          "option": "",
+          "params": {
+            "min_coverage": 80
+          }
+        },
+        {
+          "id": "time_et",
+          "op": "lte",
+          "value": 1100,
+          "option": "",
+          "params": {}
+        }
+      ],
+      "parameter_set": "",
+      "pending_filters": [],
+      "source": "sample"
+    },
+    {
+      "id": "cs_candidate_trend_pullback",
+      "name": "ADX Trend Pullback",
+      "color": "#f59e0b",
+      "enabled": true,
+      "mode": "or",
+      "direction": "all",
+      "alert_direction": "",
+      "sessions": [
+        "rth"
+      ],
+      "repeat_sec": 1800,
+      "and_window_min": 5,
+      "min_triggers": 2,
+      "size_hint": "half",
+      "triggers": [
+        {
+          "id": "back_to_ema",
+          "options": [
+            "ema20_5"
+          ],
+          "params": {
+            "away_pct": 0.5,
+            "away_candles": 5
+          },
+          "repeat_sec": 0
+        }
+      ],
+      "notes": "Trend pullback: returns to the 5-minute EMA20 after at least five candles 0.5% away, with EMA9/EMA21 aligned, RVOL at least 1x, Wilder ADX(14) at least 30, and relative strength versus the mapped sector ETF in the trade direction.",
+      "universe_profile": "up_liquid_movers",
+      "parameters": [
+        {
+          "id": "ema_stack",
+          "op": "gte",
+          "value": 0,
+          "option": "trade",
+          "params": {
+            "fast": 9,
+            "slow": 21,
+            "tf": 5
+          }
+        },
+        {
+          "id": "rvol",
+          "op": "gte",
+          "value": 1,
+          "option": "",
+          "params": {}
+        },
+        {
+          "id": "time_et",
+          "op": "gte",
+          "value": 1000,
+          "option": "",
+          "params": {}
+        },
+        {
+          "id": "adx",
+          "op": "gte",
+          "value": 30,
+          "option": "",
+          "params": {
+            "period": 14,
+            "tf": 5
+          }
+        },
+        {
+          "id": "rrs_sector_m5",
+          "op": "gte",
+          "value": 0,
+          "option": "trade",
+          "params": {}
+        }
+      ],
+      "parameter_set": "",
+      "pending_filters": [],
+      "source": "sample"
+    },
+    {
+      "id": "cs_exit_trade_watch_wfwk",
+      "name": "Exit Trade Watch",
+      "color": "#3b82f6",
+      "enabled": true,
+      "mode": "or",
+      "direction": "long",
+      "alert_direction": "long",
+      "sessions": [
+        "rth"
+      ],
+      "repeat_sec": 0,
+      "and_window_min": 5,
+      "min_triggers": 2,
+      "size_hint": "half",
+      "triggers": [
+        {
+          "id": "cross_below",
+          "options": [
+            "ema9_5"
+          ],
+          "params": {
+            "tf": 1
+          },
+          "repeat_sec": 300
+        }
+      ],
+      "notes": "Exit watch: fires when a 1-minute candle closes below the 5-minute EMA(9) after the prior 1-minute candle closed at or above it.",
+      "universe_profile": "",
+      "parameters": [],
+      "parameter_set": "",
+      "pending_filters": [],
+      "source": "sample"
+    },
+    {
+      "id": "cs_momentum_watch",
+      "name": "Momentum Watch",
+      "color": "#22c55e",
+      "enabled": true,
+      "mode": "atleast",
+      "direction": "long",
+      "alert_direction": "",
+      "sessions": [
+        "rth"
+      ],
+      "repeat_sec": 3600,
+      "and_window_min": 15,
+      "min_triggers": 2,
+      "size_hint": "half",
+      "triggers": [
+        {
+          "id": "vwap_support",
+          "options": [
+            "3"
+          ],
+          "params": {
+            "tol_pct": 3,
+            "tol_unit": 1
+          },
+          "repeat_sec": 0
+        },
+        {
+          "id": "ema_cross_ema",
+          "options": [
+            "up"
+          ],
+          "params": {
+            "fast": 3,
+            "slow": 9,
+            "tf": 5
+          },
+          "repeat_sec": 0
+        },
+        {
+          "id": "range_break",
+          "options": [
+            "up"
+          ],
+          "params": {
+            "bars": 5,
+            "max_range_pct": 0.4,
+            "width_unit": 1,
+            "vol_mult": 1.2,
+            "tf": 5
+          },
+          "repeat_sec": 0
+        }
+      ],
+      "notes": "Long-side momentum watch, not an entry signal: at least two of a 3-minute VWAP support bounce, bullish 3/9 EMA cross on 5-minute candles, and upward tight-range break with volume must occur within 15 minutes. RVOL >= 1, positive 5-minute relative strength versus SPY, and price above VWAP are required at alert time. At most once per symbol per hour; a later qualifying run can alert again.",
+      "universe_profile": "up_liquid_movers",
+      "parameters": [
+        {
+          "id": "rvol",
+          "op": "gte",
+          "value": 1,
+          "option": "",
+          "params": {}
+        },
+        {
+          "id": "rrs_m5",
+          "op": "gt",
+          "value": 0,
+          "option": "trade",
+          "params": {}
+        },
+        {
+          "id": "dist_vwap_pct",
+          "op": "gte",
+          "value": 0,
+          "option": "trade",
+          "params": {}
+        }
+      ],
       "parameter_set": "",
       "pending_filters": [],
       "source": "sample"

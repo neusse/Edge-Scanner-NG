@@ -22,6 +22,7 @@ Options:
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
 import os
 import signal
@@ -31,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 from dotenv import load_dotenv
@@ -47,6 +49,8 @@ from scanner.api import AppState, bind_sockets, create_app
 from scanner.feed_hub import FeedHub
 from scanner.data import FEEDS, make_feed
 from scanner.live_scanner import LiveScanner
+from scanner.instance_lock import ScannerInstanceLock
+from scanner.market_session import session_close, stop_stream_at_close
 from scanner.market import classify_market
 from scanner.custom_setups import CustomEvaluator
 from scanner.fundamentals import get_cache as get_fundamentals_cache
@@ -375,10 +379,29 @@ def main() -> None:
         ext.add_args(parser)
     args = parser.parse_args()
 
+    # Lock before universe/auth/history work. The replay launcher uses this
+    # same installation-scoped file and will refuse while live owns it.
+    instance_lock = ScannerInstanceLock(Path("data/.scanner-instance.lock"), "live")
+    try:
+        instance_lock.acquire()
+    except RuntimeError as exc:
+        sys.exit(str(exc))
+    atexit.register(instance_lock.release)
+
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.WARNING),
         format="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
     )
+
+    schwab_close = None
+    if args.feed == "schwab":
+        # After-hours bars are not part of this live strategy. Do not spend
+        # minutes warming up only to open a stream after the NYSE close.
+        today_et = datetime.now(ZoneInfo("America/New_York")).date()
+        schwab_close = session_close(today_et)
+        if schwab_close is None or datetime.now(ZoneInfo("UTC")) >= schwab_close:
+            print("NYSE session is closed; Schwab live scanner will not start a stream.", flush=True)
+            return
 
     data_desc = args.feed.capitalize()
     if args.feed == "alpaca":
@@ -732,11 +755,33 @@ def main() -> None:
 
     scanner._on_bar = _on_bar_diag
 
+    close_watcher_stop = None
+    if args.feed == "schwab" and schwab_close is not None:
+        # Allow the last 15:59/12:59 bar to arrive, then stop the single stream
+        # from a separate thread. Stopping it in a Windows signal handler can
+        # deadlock the stream's own event loop.
+        close_watcher_stop = threading.Event()
+        close_deadline = schwab_close + timedelta(seconds=90)
+
+        def _stop_after_close() -> None:
+            def _stop() -> None:
+                print("\nNYSE session closed; stopping Schwab stream.", flush=True)
+                feed.stop_stream()
+            stop_stream_at_close(schwab_close, _stop, close_watcher_stop)
+
+        if datetime.now(ZoneInfo("UTC")) >= close_deadline:
+            print("NYSE session closed during warmup; Schwab stream was not opened.", flush=True)
+            app_state.hub.set_status("stopping")
+            return
+        threading.Thread(target=_stop_after_close, daemon=True, name="schwab-session-close").start()
+
     try:
         scanner.connect()
     except (KeyboardInterrupt, TimeoutError):
         pass
     finally:
+        if close_watcher_stop is not None:
+            close_watcher_stop.set()
         app_state.hub.set_status("stopping")
 
     # ── Session summary (after Ctrl-C) ────────────────────────────────────────

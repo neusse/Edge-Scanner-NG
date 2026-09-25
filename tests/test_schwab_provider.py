@@ -63,6 +63,45 @@ def _feed(tmp_path, client):
     return SchwabFeed(cache_dir=tmp_path / "d", intraday_cache_dir=tmp_path / "m", client=client)
 
 
+def test_direct_schwab_client_strips_callback_trailing_slash(tmp_path, monkeypatch):
+    """Replay initializes the provider without the live batch launcher's fixup."""
+    import sys
+    import types
+
+    called = {}
+
+    def fake_client(**kwargs):
+        called.update(kwargs)
+        return _Client()
+
+    monkeypatch.setattr(sw, "refresh_token_age_days", lambda: 0.5)
+    monkeypatch.setenv("SCHWAB_APP_KEY", "test-key")
+    monkeypatch.setenv("SCHWAB_APP_SECRET", "test-secret")
+    monkeypatch.setenv("SCHWAB_CALLBACK_URL", "https://127.0.0.1/")
+    monkeypatch.setitem(sys.modules, "schwabdev", types.SimpleNamespace(Client=fake_client))
+
+    SchwabFeed(cache_dir=tmp_path / "d", intraday_cache_dir=tmp_path / "m")
+
+    assert called["callback_url"] == "https://127.0.0.1"
+    assert os.environ["SCHWAB_CALLBACK_URL"] == "https://127.0.0.1/"
+
+
+def test_callback_with_trailing_slash_requires_existing_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(sw, "refresh_token_age_days", lambda: None)
+    monkeypatch.setenv("SCHWAB_CALLBACK_URL", "https://127.0.0.1/")
+
+    with pytest.raises(RuntimeError, match="no imported schwabdev token"):
+        SchwabFeed(cache_dir=tmp_path / "d", intraday_cache_dir=tmp_path / "m")
+
+
+def test_callback_with_trailing_slash_blocks_implicit_relogin(tmp_path, monkeypatch):
+    monkeypatch.setattr(sw, "refresh_token_age_days", lambda: 6.99)
+    monkeypatch.setenv("SCHWAB_CALLBACK_URL", "https://127.0.0.1/")
+
+    with pytest.raises(RuntimeError, match="due for renewal"):
+        SchwabFeed(cache_dir=tmp_path / "d", intraday_cache_dir=tmp_path / "m")
+
+
 def test_rate_limiter_spaces_calls_evenly():
     t = [0.0]
     waits = []
@@ -76,6 +115,52 @@ def test_request_retries_429_then_succeeds(tmp_path):
     c = _Client(fail_first=2)
     df = _feed(tmp_path, c).get_historical_daily("AAA", date(2026, 1, 5), date(2026, 1, 20))
     assert len(c.calls) == 3 and len(df) == 10
+
+
+def test_chart_history_recovers_once_after_external_token_refresh(tmp_path):
+    """A connected stream may outlive an obsolete REST Authorization header."""
+    class StaleClient(_Client):
+        def __init__(self):
+            super().__init__()
+            self.current = False
+            self.refresh_calls = 0
+
+        def price_history(self, symbol, **kw):
+            self.calls.append(symbol)
+            return _Resp(200, _candles(kw["startDate"].date(), 2)) if self.current else _Resp(401)
+
+        def update_tokens(self, force_access_token=False):
+            assert force_access_token is True
+            self.refresh_calls += 1
+            self.current = True
+            return True
+
+    client = StaleClient()
+    bars = _feed(tmp_path, client).get_bars_range("AAA", "1Min", date(2026, 1, 5), date(2026, 1, 6))
+    assert len(bars) == 2
+    assert client.calls == ["AAA", "AAA"]
+    assert client.refresh_calls == 1
+
+
+def test_chart_history_does_not_loop_when_rest_auth_cannot_recover(tmp_path):
+    class RejectedClient(_Client):
+        def __init__(self):
+            super().__init__()
+            self.refresh_calls = 0
+
+        def price_history(self, symbol, **kw):
+            self.calls.append(symbol)
+            return _Resp(401)
+
+        def update_tokens(self, force_access_token=False):
+            self.refresh_calls += 1
+            return False
+
+    client = RejectedClient()
+    with pytest.raises(RuntimeError, match="HTTP 401"):
+        _feed(tmp_path, client).get_bars_range("AAA", "1Min", date(2026, 1, 5), date(2026, 1, 6))
+    assert client.calls == ["AAA"]
+    assert client.refresh_calls == 1
 
 
 def test_daily_multi_fetches_each_symbol_and_reports_progress(tmp_path):
@@ -182,6 +267,7 @@ def test_expired_login_fails_fast_with_instructions(tmp_path, monkeypatch):
     monkeypatch.setattr(sw, "refresh_token_age_days", lambda: real(db))
     monkeypatch.setenv("SCHWAB_APP_KEY", "k")
     monkeypatch.setenv("SCHWAB_APP_SECRET", "s")
+    monkeypatch.setenv("SCHWAB_CALLBACK_URL", "https://127.0.0.1")
     with pytest.raises(RuntimeError, match="schwab_auth.py"):
         SchwabFeed(cache_dir=tmp_path / "d", intraday_cache_dir=tmp_path / "m")
 

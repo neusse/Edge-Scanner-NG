@@ -55,6 +55,12 @@ sink can further suppress publication; those do not change the trigger's event c
 | `rvol_cross` | recross | RTH | RVOL crosses from below to at/above threshold; falls below to re-arm. |
 | `rs_spy` | recross | RTH | Stock minus SPY 15m momentum crosses relative-strength threshold. |
 | `momentum_burst` | qualifying_bar | RTH | Each 1m bar meeting ATR range and directional close-position thresholds qualifies. |
+| `ta_macd_hist_cross` | completed_candle_recross | RTH | Classic MACD histogram crosses the configured level on a completed candle; opposite side re-arms. |
+| `ta_rsi_cross` | completed_candle_recross | RTH | Classic RSI crosses the configured level on a completed candle; opposite side re-arms. |
+| `ta_stoch_k_cross` | completed_candle_recross | RTH | Classic stochastic %K crosses the configured level on a completed candle; opposite side re-arms. |
+| `ta_cci_cross` | completed_candle_recross | RTH | Classic CCI crosses the configured level on a completed candle; opposite side re-arms. |
+| `ta_bb_percent_b_cross` | completed_candle_recross | RTH | Classic Bollinger %B crosses the configured level on a completed candle; opposite side re-arms. |
+| `ta_adx_cross` | completed_candle_recross | RTH | Classic ADX crosses the configured level on a completed candle; opposite side re-arms. |
 
 The executable cases in `tests/test_custom_setups.py`, `tests/test_trigger_contracts.py`, and
 `tests/test_live_scanner.py` cover event families, strict/equality boundaries, session filtering,

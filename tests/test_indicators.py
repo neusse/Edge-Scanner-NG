@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from scanner.indicators.ema_sma import ema, ema_update, sma
-from scanner.indicators.vwap import session_vwap, vwap_update
+from scanner.indicators.ema_sma import SeededEMA, ema, sma
+from scanner.indicators.vwap import session_vwap
 from scanner.indicators.rvol import build_volume_profile, compute_rvol
 from scanner.indicators.chart_quality import chart_quality
 from scanner.indicators.adx import adx
@@ -77,17 +77,25 @@ def test_ema_matches_shared_chart_golden_fixture(period):
     assert out.iloc[-1] == pytest.approx(expected["last_value"])
 
 
-def test_ema_update_seeds_on_first_bar():
-    result = ema_update(None, 42.0, span=8)
-    assert result == 42.0
+def test_completed_close_ema_tracker_uses_classic_warmup():
+    tracker = SeededEMA(3)
+    assert tracker.push(1.0) is None
+    assert tracker.push(2.0) is None
+    assert tracker.push(3.0) == pytest.approx(2.0)
+    assert tracker.push(4.0) == pytest.approx(3.0)
 
 
-def test_ema_update_incremental():
-    alpha = 2.0 / (8 + 1)
-    prev = 100.0
-    price = 110.0
-    expected = alpha * price + (1 - alpha) * prev
-    assert ema_update(prev, price, span=8) == pytest.approx(expected)
+def test_bulk_ema_seed_matches_completed_close_updates():
+    closes = [float(i) for i in range(1, 61)]
+    seeded = SeededEMA(9)
+    incremental = SeededEMA(9)
+    values = seeded.seed(closes)
+    expected = [incremental.push(close) for close in closes]
+    assert values.iloc[:8].isna().all()
+    assert values.iloc[8:].tolist() == pytest.approx(expected[8:])
+    assert seeded.value == pytest.approx(incremental.value)
+    assert seeded.prev == pytest.approx(incremental.prev)
+    assert seeded.push(61.0) == pytest.approx(incremental.push(61.0))
 
 
 # ── Session VWAP ──────────────────────────────────────────────────────────────
@@ -113,15 +121,6 @@ def test_session_vwap_weighted():
     # tp bar0=100, tp bar1=200; weighted = (100*1 + 200*3)/(1+3) = 700/4 = 175
     vwap = session_vwap(high, low, close, volume)
     assert vwap.iloc[-1] == pytest.approx(175.0)
-
-
-def test_vwap_update_incremental():
-    num, den, v = vwap_update(0.0, 0.0, high=105.0, low=95.0, close=100.0, volume=1000.0)
-    assert den == pytest.approx(1000.0)
-    assert v == pytest.approx(100.0)  # tp = (105+95+100)/3 = 100
-    # Add a second bar at same price
-    num2, den2, v2 = vwap_update(num, den, 105.0, 95.0, 100.0, 2000.0)
-    assert v2 == pytest.approx(100.0)  # uniform price -> same VWAP
 
 
 # ── RVOL ──────────────────────────────────────────────────────────────────────
@@ -185,25 +184,25 @@ def test_compute_rvol_empty_profile():
 
 # ── ADX ────────────────────────────────────────────────────────────────
 
-def test_wilder_atr_uses_arithmetic_seed_then_wilder_recurrence():
+def test_atr_uses_classic_seed_and_recurrence():
     # Flat closes make the candle ranges the exact true ranges: 1, 2.5, 4, 5, 2.
     ranges = pd.Series([1.0, 2.5, 4.0, 5.0, 2.0], index=_daily_index(5))
     close = pd.Series(100.0, index=ranges.index)
     out = wilder_atr(close + ranges / 2, close - ranges / 2, close, 3)
 
-    assert out.iloc[:2].isna().all()
-    assert out.iloc[2:].tolist() == pytest.approx([2.5, 10 / 3, 26 / 9])
+    assert out.iloc[:3].isna().all()
+    assert out.iloc[3:].tolist() == pytest.approx([23 / 6, 29 / 9])
 
 
 def test_wilder_atr_waits_for_fresh_complete_history_after_a_missing_candle():
-    ranges = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], index=_daily_index(6))
+    ranges = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], index=_daily_index(7))
     close = pd.Series(100.0, index=ranges.index)
     high = close + ranges / 2
     high.iloc[2] = float("nan")
     out = wilder_atr(high, close - ranges / 2, close, 3)
 
-    assert out.iloc[:5].isna().all()
-    assert out.iloc[5] == pytest.approx(5.0)
+    assert out.iloc[:6].isna().all()
+    assert out.iloc[6] == pytest.approx(6.0)
 
 
 def test_adx_reaches_100_for_a_one_way_trend():

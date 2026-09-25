@@ -242,7 +242,7 @@ def test_cumulative_volume():
 
 # ── on_bar: EMA 3/8 ──────────────────────────────────────────────────────────
 
-def test_ema_seeds_on_first_completed_5m_bar():
+def test_classic_ema_waits_for_a_full_completed_candle_window():
     state = _make_state(30)
     # Fill the 09:30-09:34 slot — no bar completes yet
     for t in ["09:30", "09:31", "09:32", "09:33", "09:34"]:
@@ -250,8 +250,8 @@ def test_ema_seeds_on_first_completed_5m_bar():
     assert state.ema_3 is None
     # 09:35 starts a new slot → completes the 09:30 bar (close=100.0)
     state.on_bar(_bar("2024-01-02 09:35", price=101.0))
-    assert state.ema_3 == pytest.approx(100.0)
-    assert state.ema_9 == pytest.approx(100.0)
+    assert state.ema_3 is None
+    assert state.ema_9 is None
 
 
 def test_ema_prev_values_lag_by_one_5m_bar():

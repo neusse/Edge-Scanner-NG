@@ -17,7 +17,7 @@ const STATUS: Record<CheckStatus, { label: string; cls: string; title: string }>
   // Outcome colors are diagnostic, never long/short green and red.
   sent: { label: 'Sent', cls: 'sc-sent', title: 'The alert went out to the feed' },
   blocked: { label: 'Blocked', cls: 'sc-blocked', title: 'The alert pattern happened, but a universe filter or parameter stopped it' },
-  waiting: { label: 'Waiting', cls: 'sc-wait', title: 'Part of an "at least N of" setup fired; still waiting for the rest' },
+  waiting: { label: 'Waiting', cls: 'sc-wait', title: 'Some triggers matched; the setup is waiting for the remaining required triggers before it can send an alert' },
   repeat: { label: 'Held', cls: 'muted', title: "Held back by a don't-repeat timer: it already alerted on this stock recently" },
   suppressed: { label: 'Suppressed', cls: 'muted', title: 'Replaced by a stronger setup on the same bar' },
   quiet: { label: 'No pattern', cls: 'muted', title: 'Its alert pattern did not happen in this window' },
@@ -26,6 +26,8 @@ const STATUS: Record<CheckStatus, { label: string; cls: string; title: string }>
 // Event timestamps are the bar's START; the Scanner window shows the close.
 const closeTime = (epoch: number) => fmtTimeET(new Date((epoch + 60) * 1000).toISOString())
 const dirLabel = (d: string) => (d === 'long' ? 'long' : d === 'short' ? 'short' : '')
+// Older live scanner processes may still send the previous wording until restart.
+const reasonLabel = (reason: string) => reason.replace(/^(\d+ of \d+) alerts within (.+)$/, '$1 triggers matched within $2')
 
 /** One line for a row with no events: per direction, pass or the first blocker. */
 const nowSummary = (now: CheckNow[]) => now.map(n => {
@@ -36,7 +38,7 @@ const nowSummary = (now: CheckNow[]) => now.map(n => {
 
 /** The first blocker, with a count of the rest: the full list is one click away. */
 function FirstReason({ reasons }: { reasons: string[] }) {
-  return <>{reasons[0]}{reasons.length > 1 && <span className="sc-more">+{reasons.length - 1} more</span>}</>
+  return <>{reasonLabel(reasons[0])}{reasons.length > 1 && <span className="sc-more">+{reasons.length - 1} more</span>}</>
 }
 
 function NowLine({ n, quietRow }: { n: CheckNow; quietRow: boolean }) {
@@ -60,7 +62,7 @@ function EventLine({ e }: { e: CheckEvent }) {
       <span className="mono faint">{closeTime(e.ts)}</span>
       <span className={`badge ${st.cls}`} title={st.title}>{st.label}</span>
       {e.direction && <span className="faint sc-dir">{dirLabel(e.direction)}</span>}
-      <span className="dim">{e.reasons.length ? e.reasons.join('; ') : (e.trigger || 'alert sent')}</span>
+      <span className="dim">{e.reasons.length ? e.reasons.map(reasonLabel).join('; ') : (e.trigger || 'alert sent')}</span>
       {e.reasons.length > 0 && e.trigger && <span className="faint ellipsis" title={e.trigger}>{e.trigger}</span>}
     </div>
   )
@@ -84,7 +86,7 @@ function Row({ r, open, onToggle, lastBar }: { r: CheckRow; open: boolean; onTog
           </span>
         )}
       </button>
-      {!open && last && last.reasons.length > 0 && <div className="sc-why dim ellipsis" title={last.reasons.join('\n')}><FirstReason reasons={last.reasons} /></div>}
+      {!open && last && last.reasons.length > 0 && <div className="sc-why dim ellipsis" title={last.reasons.map(reasonLabel).join('\n')}><FirstReason reasons={last.reasons} /></div>}
       {!open && !last && r.now.length > 0 && <div className="sc-why faint ellipsis" title={nowSummary(r.now)}>{nowSummary(r.now)}</div>}
       {open && (
         <div className="sc-body">

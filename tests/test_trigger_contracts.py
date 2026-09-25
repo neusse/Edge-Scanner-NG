@@ -16,7 +16,7 @@ def test_contract_matrix_has_an_explicit_row_and_lifetime_for_every_native_trigg
     from scanner.trigger_catalog import EVENT_LIFETIMES
 
     native = {trigger.id for trigger in CATALOG if trigger.source == "native"}
-    assert len(native) == 46
+    assert len(native) == 52
     assert set(EVENT_LIFETIMES) == native
     matrix = (Path(__file__).resolve().parents[1] / "docs" / "TRIGGER_CONTRACTS.md").read_text()
     for trigger_id in native:

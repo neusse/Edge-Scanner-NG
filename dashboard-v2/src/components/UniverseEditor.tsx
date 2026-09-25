@@ -159,7 +159,7 @@ export function ConditionList({ conditions, kind, onChange, addLabel }: {
   return (
     <>
       <div className="cfg-card-head">
-        <span>{kind === 'static' ? 'Conditions' : 'Parameters'} <span className="faint">{conditions.length}</span></span>
+        <span>{kind === 'static' ? 'Conditions' : 'Checks'} <span className="faint">{conditions.length}</span></span>
         <button className="btn" onClick={() => setAdding(v => !v)}>{addLabel ?? '+ Add condition'}</button>
       </div>
 
@@ -186,7 +186,7 @@ export function ConditionList({ conditions, kind, onChange, addLabel }: {
         <div className="faint" style={{ padding: '4px 10px 10px', fontSize: 11 }}>
           {kind === 'static'
             ? 'No conditions. Every symbol passes.'
-            : 'No parameters. Nothing about the current bar is required.'}
+            : 'No checks. Nothing about the current bar is required.'}
         </div>
       )}
 
@@ -280,7 +280,7 @@ export function UniverseEditor({ profile, kind = 'universe', usedBy = [], onSave
 
       <div className="cfg-card">
         <div className="cfg-card-head">
-          <span>{isParams ? 'Parameter set' : 'Filter'}</span>
+          <span>{isParams ? 'Shared checks' : 'Filter'}</span>
           <span className="faint mono" style={{ fontSize: 10 }}>{draft.id}</span>
         </div>
         <div className="cfg-row">
@@ -301,8 +301,8 @@ export function UniverseEditor({ profile, kind = 'universe', usedBy = [], onSave
               ? `Used by ${used.join(', ')}. Conditions are ANDed: all must pass for an alert to be emitted.`
               : 'Conditions are ANDed: all must pass for an alert to be emitted. Attach it to a setup from that setup’s page.'}
           {!isAll && (isParams
-            ? ' A parameter set holds only what changes bar to bar: relative volume, distance from VWAP, percent change, EMA stack. It is ANDed with each setup’s own parameters, so a setup can tighten one of these values but never loosen it.'
-            : ' A universe holds only what is fixed for the session: price, volume, dollar volume, ATR%, market cap, float, short interest. Anything that changes bar to bar is a setup parameter.')}
+            ? ' Shared checks hold only what changes bar to bar: relative volume, distance from VWAP, percent change, EMA stack. They are ANDed with each setup’s own checks, so a setup can tighten one of these values but never loosen it.'
+            : ' A universe holds only what is fixed for the session: price, volume, dollar volume, ATR%, market cap, float, short interest. Anything that changes bar to bar is a setup check.')}
         </div>
       </div>
 
@@ -310,7 +310,7 @@ export function UniverseEditor({ profile, kind = 'universe', usedBy = [], onSave
         {isAll
           ? <div className="cfg-card-head"><span>Conditions <span className="faint">0</span></span></div>
           : <ConditionList conditions={draft.conditions} kind={isParams ? 'dynamic' : 'static'}
-              addLabel={isParams ? '+ Add parameter' : '+ Add condition'}
+              addLabel={isParams ? '+ Add check' : '+ Add condition'}
               onChange={conditions => setDraft(d => ({ ...d, conditions }))} />}
         {isAll && (
           <div className="faint" style={{ padding: '4px 10px 10px', fontSize: 11 }}>

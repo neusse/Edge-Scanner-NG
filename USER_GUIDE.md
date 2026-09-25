@@ -135,6 +135,36 @@ Its cache is separate (`data/schwab/`), so switching back and forth never mixes 
 closely the two providers agree on your universe: `python scripts/check_schwab_match.py`
 (needs both logins; about an hour the first time).
 
+The Schwab live scanner now stops its one stream 90 seconds after the official NYSE close, including
+early-close days. The short grace period lets the final minute bar arrive. Starting it after the
+close, or on a market holiday, does not open a stream. This takes effect on the **next launch**;
+an already running process does not acquire the new shutdown behavior until restarted.
+
+#### Optional after-close history refresh
+
+To move daily and 5-minute history downloads out of the next morning, run after each trading day:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\refresh_schwab_history.py
+```
+
+The command is REST-only: it never opens a Schwab stream. It uses the same selected watchlist (or
+universe CSV), sector ETFs, cache files, and incremental range checks as the live launcher. It can
+also do a weekly default-universe rebuild and sector-map updates before the next morning. Schedule
+it on weekdays at **17:30 Eastern / 14:30 Pacific**; non-trading days are skipped. It refuses to
+run before 30 minutes after the close, while a scanner owns the installation lock, or while the
+legacy live dashboard is still listening on port 7777. Do not run two refresh copies at once.
+
+For a no-network check of the selected universe, pass `--dry-run --session YYYY-MM-DD` with a
+completed trading day. An explicit `--universe PATH` matches the live launcher's CSV option.
+The latest result, request counts, and any missing symbols are written to
+`data/schwab/history_refresh.json`. A partial refresh returns a nonzero exit code; the already
+updated cache files remain and the next run retries what is missing.
+
+This reduces next-day **history** warmup, especially with a large universe. It does not eliminate
+the separate, current-day 1-minute bar seeding on a mid-session start, nor change Schwab's stream
+limits. If the computer is off at the scheduled time, the next refresh catches up incrementally.
+
 ### Step 4: Run it
 
 ```
@@ -328,7 +358,11 @@ until a qualifying break actually occurs.
 
 You compose setups yourself in the dashboard from three parts:
 
-- **Triggers** from the trigger catalog (`scanner/trigger_catalog.py`, about 50 of them): the moment worth
+For a plain-language list of the saved alerts (including Momentum Watch), start with the
+[Alert and setup reference](docs/SETUP_REFERENCE.md). The live **Config → Setups** window remains
+the source of truth if you have edited a setup since that reference was written.
+
+- **Triggers** from the trigger catalog (`scanner/trigger_catalog.py`): the moment worth
   an alert, such as a cross above VWAP, a 5-minute breakout, a new high of day, a candle pattern, or
   relative volume crossing a level. Combine several with OR, AND or AT LEAST logic.
 - **Parameters**: conditions that must hold when the trigger fires (for example gap of at least 2%,
@@ -344,27 +378,36 @@ the report direction on `Detected signal direction`. A position-management setup
 for example, detect only a bearish price cross below EMA9 but report the alert as `Long`, so it is
 visible in a long-only Scanner window as an exit warning for a long position.
 
-ADX is available as a trend-strength parameter. It uses completed candles and measures strength, not
-direction, so pair it with an EMA stack or another directional parameter. A period of 14 needs 28
-completed candles before it is available; until then the condition fails closed.
+ADX is available as a trend-strength check and as a level-cross trigger. It uses completed
+candles and measures strength, not direction, so pair it with a directional trigger/check.
+It fails closed during Classic's warm-up.
+
+**Classic indicators in Config.** Add a check under a setup's parameters to require SMA, EMA,
+ATR, ADX/+DI/-DI, RSI, Stochastic %K/%D, CCI, MACD line/signal/histogram, Bollinger
+lower/middle/upper/bandwidth/%B, or OBV. Pick the timeframe and (where offered) period;
+the value is from completed candles and a missing warm-up value blocks the check.
+The new trigger choices fire when MACD histogram, RSI, Stochastic %K, CCI, Bollinger %B,
+or ADX crosses a configured level on a completed candle. They do not fire for a value
+that was already beyond the level at startup. The threshold is the indicator's own unit
+(for example RSI 50 or Bollinger %B 1.0), not a percent change in stock price.
+VWAP remains a regular-session, daily-reset Classic indicator available through the
+existing VWAP checks/triggers; time-of-day RVOL and sector/SPY relative strength remain
+Edge-specific measures. None of the new triggers is added to saved setups automatically.
 
 Daily ATR extension measures live price from the prior daily EMA8 in ATR(14) units. Sector relative
 strength compares the stock with its mapped sector ETF over twelve completed 5-minute candles. The
 sector ETFs share the scanner's existing market-data connection; no second stream is opened.
-Daily ATR now uses Wilder's arithmetic mean of the first 5 or 14 true ranges as its seed, then
-Wilder smoothing on each completed daily candle. Values near the start of a short history can change
-from older scanner versions, so recheck ATR-based filters and extension thresholds after upgrading.
+Daily ATR now uses the pinned Pandas TA Classic calculation. Its first valid bar is later
+than the old handwritten calculation, and ADX may differ during warm-up. Recheck ATR-based
+filters, extension thresholds, and alert timing after upgrading.
 
-**EMA values.** Alert triggers, alert context, and Stock Info use the same 5-minute EMA tracker.
-It starts with the arithmetic mean of the first *N* completed regular-session candles, then applies
-`2 / (N + 1)` smoothing. The tracker carries across trading days, ignores extended-hours and
-developing candles, and is seeded from prior sessions at startup. Today's cached candles are
-replayed once before live scanning, so a restart does not double-count them. A value is unavailable
-until *N* eligible candles have completed. The chart uses the same seed and completed/RTH rule for
-intraday EMA overlays, but its separate, shorter fetched history and cache can make its latest
-display differ slightly from the scanner's live value. On 1- and 2-minute trigger timeframes there
-is no historical warm-up: those EMA trackers start with the current session. Daily EMA trackers use
-completed daily closes and the same SMA seed.
+**Indicator values.** Scanner, replay, and chart overlays now call the same pinned Classic
+calculation module. EMA needs *N* completed candles before it is available. Five-minute EMA
+trackers carry prior-session history when loaded, while 1- and 2-minute trackers start with
+the current session. The chart requests server-calculated EMA/SMA/VWAP overlays rather than
+calculating them in the browser. Its fetched history can be shorter than the scanner's seed,
+so an early plotted value may still differ slightly from an alert's seeded value. The chart
+does not plot unfinished intraday-candle indicator values.
 
 Directional high-RVOL ORB setups can use three opening-specific parameters. **Opening 5-min candle
 direction** requires a long breakout to agree with a bullish 09:30-09:35 candle, or a short breakdown
@@ -400,6 +443,7 @@ add). The library contains:
 | RS Leaders | The strongest names vs SPY over the past hour, on a daily chart that agrees, making a new push |
 | Above Prior Day Range | Trading above yesterday's entire range with volume: a breakout day in progress |
 | Testing Prior Day High | Pressing the high of day right at yesterday's high, before the breakout has happened |
+| Momentum Watch | Two of VWAP support bounce, bullish 3/9 EMA cross, and upward range break within 15 minutes, with volume and relative-strength filters |
 
 **Short**
 
@@ -414,8 +458,10 @@ add). The library contains:
 | Below Prior Day Range | Trading below yesterday's entire range with volume: a breakdown day in progress |
 | Testing Prior Day Low | Pressing the low of day right at yesterday's low, before the breakdown has happened |
 
+The library also includes direction-neutral **Volume Spike** and **RVOL Crosses 2x** alerts.
+
 Each one is a normal custom setup afterwards: rename it, change its thresholds, or delete it. Open it in
-Config to see the exact triggers and parameters it uses.
+Config to see the exact triggers and checks it uses.
 
 ---
 
@@ -425,8 +471,9 @@ Open **Config** from the top bar or with `Ctrl+,`. Changes apply on the next bar
 
 ### Setups
 
-Create, edit, enable or disable custom setups, change their triggers and parameters, and assign each one
-a universe filter.
+Create, edit, enable or disable custom setups, change their triggers and checks, and assign each one
+a universe filter. A trigger is an event; a check is a current-bar requirement; an alert is the
+published result. Numbers inside a trigger are that trigger's settings, not separate checks.
 
 ### Settings
 
@@ -483,6 +530,7 @@ filters more to choose from but costs more CPU per minute and a longer first dow
 | `scripts/install_setup_library.py` | Installs the sample custom setups into a running scanner |
 | `scripts/fetch_history.py` | Seeds or refreshes the daily bar cache for a symbol list |
 | `scripts/schwab_auth.py` | Logs in to Schwab (`DATA_PROVIDER=schwab`); repeat weekly |
+| `scripts/refresh_schwab_history.py` | REST-only after-close refresh of the Schwab daily and 5-minute caches |
 | `scripts/check_schwab_match.py` | Compares Alpaca and Schwab universes and data side by side |
 | `scripts/compare_live_feeds.py` | Compares two running scanners: symbol state and alerts, per data tier |
 | `scripts/compare_universes.py` | Builds two universes and explains every difference |
@@ -670,7 +718,7 @@ symbols you are watching. Then open a **Setup check** window on a symbol to see 
 failing. Relative volume needs the 5-minute history from startup; if that step failed, restart the
 scanner.
 
-**A setup fires too often or too rarely.** Adjust its parameters in Config, or the shared settings; the
+**A setup fires too often or too rarely.** Adjust its triggers and checks in Config, or the shared settings; the
 pass rate next to each setting shows how restrictive it is today. Changes apply on the next bar.
 
 **200-day averages or 52-week levels are empty.** Daily history is too short. Run with

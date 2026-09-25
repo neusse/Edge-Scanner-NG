@@ -31,6 +31,7 @@ def effective_revision(base_revision: str, profile: Any = None,
         "parameters": parameters or [],
         "settings": config_hash,
         "settings_values": settings_values or {},
+        "indicator_calculation": calculation_version(),
     })
 
 
@@ -46,6 +47,13 @@ def _implementation_digest(module: str) -> str | None:
     except (ImportError, OSError, ValueError):
         pass
     return None
+
+
+@lru_cache(maxsize=1)
+def calculation_version() -> str:
+    """Installed native-indicator package and Edge adapter source identity."""
+    from scanner.indicators.classic import VERSION
+    return f"{VERSION};edge-classic-sha256:{_implementation_digest('scanner.indicators.classic')}"
 
 
 def system_revision(code: str, config_hash: str | None, evaluator: Any = None) -> str:

@@ -19,10 +19,10 @@ import pandas as pd
 
 from scanner.indicators.atr import wilder_atr
 from scanner.indicators.chart_quality import chart_quality as compute_chart_quality
-from scanner.indicators.ema_sma import ema, ema_update, sma
+from scanner.indicators.ema_sma import SeededEMA, ema, sma
 from scanner.indicators.rvol import build_volume_profile, compute_rvol
 from scanner.indicators.rrs import D1_LENGTH, M5_LENGTH, rrs as compute_rrs, rrs_raw as compute_rrs_raw
-from scanner.indicators.vwap import vwap_update
+from scanner.indicators.vwap import session_vwap
 
 log = logging.getLogger(__name__)
 
@@ -206,8 +206,8 @@ class SymbolState:
     def _reset_intraday(self) -> None:
         """Clear intraday state at the start of a new session."""
         self._cum_vol: float = 0.0
-        self._vwap_num: float = 0.0
-        self._vwap_den: float = 0.0
+        self._vwap_bars: list[dict] = []
+        self._vwap_value: Optional[float] = None
         self._high_of_day: float = float("-inf")
         self._low_of_day: float = float("inf")
         self._prev_hod: Optional[float] = None
@@ -227,6 +227,7 @@ class SymbolState:
         self._ema_21:      Optional[float] = None
         self._prev_ema_8:  Optional[float] = None
         self._prev_ema_21: Optional[float] = None
+        self._ema_trackers = {n: SeededEMA(n) for n in (_EMA_SHORT, _EMA_LONG, _EMA_MED, _EMA_TREND)}
 
         # Conviction: 10AM bar open (resets each session). The trigger's clean-run
         # check is a rolling last-N-bars window, so no
@@ -311,10 +312,14 @@ class SymbolState:
         self._prev_close = self._last_close
         self._prev_vwap  = self.vwap       # VWAP before this bar's volume is added
 
-        # VWAP (running)
-        self._vwap_num, self._vwap_den, _ = vwap_update(
-            self._vwap_num, self._vwap_den, high, low, close, vol
-        )
+        # Classic VWAP on completed RTH candles only. Keep the full session so
+        # startup seeding and live updates use the same calculation and anchor.
+        self._vwap_bars.append(self._last_1m[-1])
+        vwap_frame = pd.DataFrame(self._vwap_bars)
+        vwap_frame.index = pd.DatetimeIndex(vwap_frame["timestamp"])
+        vwap_last = session_vwap(vwap_frame.high, vwap_frame.low,
+                                 vwap_frame.close, vwap_frame.volume).iloc[-1]
+        self._vwap_value = None if pd.isna(vwap_last) else float(vwap_last)
         self._cum_vol += vol
 
         # Record this bar's side of the (now fully updated) VWAP, for
@@ -342,14 +347,14 @@ class SymbolState:
             close_5m = self._stock_5m[-1]["close"]
             self._prev_ema_3 = self._ema_3
             self._prev_ema_9 = self._ema_9
-            self._ema_3 = ema_update(self._ema_3, close_5m, _EMA_SHORT)
-            self._ema_9 = ema_update(self._ema_9, close_5m, _EMA_LONG)
+            self._ema_3 = self._ema_trackers[_EMA_SHORT].push(close_5m)
+            self._ema_9 = self._ema_trackers[_EMA_LONG].push(close_5m)
 
             # EMA 8/21 (for new triggers)
             self._prev_ema_8  = self._ema_8
             self._prev_ema_21 = self._ema_21
-            self._ema_8  = ema_update(self._ema_8,  close_5m, _EMA_MED)
-            self._ema_21 = ema_update(self._ema_21, close_5m, _EMA_TREND)
+            self._ema_8  = self._ema_trackers[_EMA_MED].push(close_5m)
+            self._ema_21 = self._ema_trackers[_EMA_TREND].push(close_5m)
 
             # Store snapshots in the completed bar dict for lookback-based triggers
             completed_bar = self._stock_5m[-1]
@@ -419,7 +424,7 @@ class SymbolState:
 
     @property
     def vwap(self) -> Optional[float]:
-        return self._vwap_num / self._vwap_den if self._vwap_den > 0 else None
+        return self._vwap_value
 
     @property
     def prev_vwap(self) -> Optional[float]:

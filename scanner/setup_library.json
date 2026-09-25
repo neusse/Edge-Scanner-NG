@@ -1246,6 +1246,34 @@
       "parameter_set": "",
       "pending_filters": [],
       "source": "library"
+    },
+    {
+      "id": "cs_momentum_watch",
+      "name": "Momentum Watch",
+      "color": "#22c55e",
+      "enabled": true,
+      "mode": "atleast",
+      "direction": "long",
+      "sessions": ["rth"],
+      "repeat_sec": 3600,
+      "and_window_min": 15,
+      "min_triggers": 2,
+      "size_hint": "half",
+      "triggers": [
+        {"id": "vwap_support", "options": ["3"], "params": {"tol_pct": 3, "tol_unit": 1}, "repeat_sec": 0},
+        {"id": "ema_cross_ema", "options": ["up"], "params": {"fast": 3, "slow": 9, "tf": 5}, "repeat_sec": 0},
+        {"id": "range_break", "options": ["up"], "params": {"bars": 5, "max_range_pct": 0.4, "width_unit": 1, "vol_mult": 1.2, "tf": 5}, "repeat_sec": 0}
+      ],
+      "notes": "Long-side momentum watch, not an entry signal: at least two of a 3-minute VWAP support bounce, bullish 3/9 EMA cross on 5-minute candles, and upward tight-range break with volume must occur within 15 minutes. RVOL >= 1, positive 5-minute relative strength versus SPY, and price above VWAP are required at alert time. At most once per symbol per hour; a later qualifying run can alert again.",
+      "universe_profile": "up_liquid_movers",
+      "parameters": [
+        {"id": "rvol", "op": "gte", "value": 1, "option": "", "params": {}},
+        {"id": "rrs_m5", "op": "gt", "value": 0, "option": "trade", "params": {}},
+        {"id": "dist_vwap_pct", "op": "gte", "value": 0, "option": "trade", "params": {}}
+      ],
+      "parameter_set": "",
+      "pending_filters": [],
+      "source": "library"
     }
   ]
 }

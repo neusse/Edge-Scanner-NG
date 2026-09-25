@@ -755,6 +755,59 @@ _add(ConditionDef(
 ))
 
 
+def _classic_value(c: ConditionCtx, _opt: str, params: dict,
+                   study: str, column: str) -> Optional[float]:
+    if c.series is None:
+        return None
+    tf = int(params.get("tf", 5))
+    length = int(params.get("period", 0)) or None
+    try:
+        values = c.series.study(tf, study, length)
+        if values.empty:
+            return None
+        return _f(values[column].iloc[-1])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
+
+
+# Each entry is a completed-candle value, not a hidden strategy. A setup can
+# AND it with another check and a separate event trigger in Config.
+_CLASSIC_CHECKS = (
+    ("sma", "SMA", "sma", "value", 50, "$", 0.0, "Trend strength"),
+    ("ema", "EMA", "ema", "value", 9, "$", 0.0, "Trend strength"),
+    ("atr", "ATR", "atr", "value", 14, "$", 1.0, "Volatility"),
+    ("rsi", "RSI", "rsi", "value", 14, "", 50.0, "Momentum"),
+    ("cci", "CCI", "cci", "value", 14, "", 100.0, "Momentum"),
+    ("macd", "MACD line", "macd", "value", 0, "$", 0.0, "Momentum"),
+    ("macd_signal", "MACD signal", "macd", "signal", 0, "$", 0.0, "Momentum"),
+    ("macd_hist", "MACD histogram", "macd", "histogram", 0, "$", 0.0, "Momentum"),
+    ("stoch_k", "Stochastic %K", "stoch", "k", 0, "", 80.0, "Momentum"),
+    ("stoch_d", "Stochastic %D", "stoch", "d", 0, "", 80.0, "Momentum"),
+    ("bb_lower", "Bollinger lower", "bbands", "lower", 0, "$", 0.0, "Volatility"),
+    ("bb_middle", "Bollinger middle", "bbands", "middle", 0, "$", 0.0, "Volatility"),
+    ("bb_upper", "Bollinger upper", "bbands", "upper", 0, "$", 0.0, "Volatility"),
+    ("bb_width", "Bollinger bandwidth", "bbands", "bandwidth", 0, "%", 5.0, "Volatility"),
+    ("bb_percent_b", "Bollinger %B", "bbands", "percent_b", 0, "", 0.8, "Volatility"),
+    ("obv", "On-balance volume", "obv", "value", 0, "shares", 0.0, "Volume"),
+    ("adx_plus_di", "ADX +DI", "adx", "plus_di", 14, "", 20.0, "Trend strength"),
+    ("adx_minus_di", "ADX -DI", "adx", "minus_di", 14, "", 20.0, "Trend strength"),
+)
+for _id, _label, _study, _column, _period, _unit, _default, _category in _CLASSIC_CHECKS:
+    _params = [ParamDef("tf", "Timeframe", 5, 1, 60, 1, "min",
+                        choices=(1.0, 2.0, 5.0, 15.0, 30.0, 60.0))]
+    if _period:
+        _params.append(ParamDef("period", "Period", _period, 2, 200, 1, "candles"))
+    _add(ConditionDef(
+        f"ta_{_id}", _label, _category,
+        f"Pandas TA Classic {_label} on completed candles. Missing warm-up data blocks the check.",
+        "dynamic",
+        lambda c, o, p, study=_study, column=_column: _classic_value(c, o, p, study, column),
+        unit=_unit, default_op="gte", default_value=_default,
+        min=None, max=None, step=0.1, params=tuple(_params),
+        phrase="on {tf} min" + (", period {period}" if _period else ""),
+    ))
+
+
 _add(ConditionDef(
     "gap_pct", "Gap from prior close", "Price & levels",
     "Session open against prior close. A strong noise filter: longs with "

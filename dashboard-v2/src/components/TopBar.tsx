@@ -15,6 +15,33 @@ import { WINDOW_ICONS, WINDOW_TITLES } from '../windows/defaults'
 
 const WINDOW_ORDER: WindowType[] = ['chart', 'quotes', 'scanner', 'toplist', 'screener', 'news', 'stockinfo', 'setupcheck', 'watchlist', 'clock']
 
+function ReplayControls() {
+  const { data, refresh } = usePoll(api.replayStatus, 1000)
+  const [error, setError] = useState<string | null>(null)
+  const command = async (action: string, speed?: number) => {
+    try {
+      await api.replayControl(action, speed)
+      setError(null)
+      void refresh()
+      if (action === 'reset') window.location.reload()
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+  }
+  return <span className="row" style={{ gap: 4 }} title={error ?? 'Replay controls; no Schwab stream is open'}>
+    <button className="btn sm" onClick={() => void command(data?.paused ? 'resume' : 'pause')}>
+      {data?.paused ? '▶ Resume' : 'Ⅱ Pause'}
+    </button>
+    <button className="btn sm" onClick={() => void command('step')}>Step</button>
+    <button className="btn sm" onClick={() => void command('reset')}>Reset</button>
+    <select className="input sm" aria-label="Replay speed" value={String(data?.speed ?? 60)}
+      onChange={e => void command('speed', Number(e.target.value))}>
+      <option value="1">1×</option><option value="10">10×</option><option value="60">60×</option>
+      <option value="600">600×</option><option value="0">Fast</option>
+    </select>
+    <span className="faint mono">{data?.position ?? 0}/{data?.total ?? 0}</span>
+    {error && <span className="down">{error}</span>}
+  </span>
+}
+
 function FeedDots() {
   const status = useFeeds(s => s.status)
   const counts = useFeeds(s => s.counts)
@@ -160,7 +187,7 @@ export function TopBar() {
       <span className="flex-spacer" />
       <FeedDots />
       <span className="sep" />
-      {clockInfo?.replay && <span className="chip static" style={{ color: 'var(--link-purple)', borderColor: 'var(--link-purple)' }} title="Replaying a past session">REPLAY {clockInfo.replay.date}</span>}
+      {clockInfo?.replay && <><span className="chip static" style={{ color: 'var(--link-purple)', borderColor: 'var(--link-purple)' }} title="Replaying a past session">REPLAY {clockInfo.replay.date}</span><ReplayControls /></>}
       {session && <span className={`chip static ${session === 'rth' ? 'up' : ''}`} title="Session">{session.toUpperCase()}</span>}
       <span className={`regime ${regime}`} title="SPY regime"><span className="dot" style={{ background: 'currentColor' }} />{regime}</span>
       <span className="clock">{clock}<span className="clock-tz">ET</span></span>

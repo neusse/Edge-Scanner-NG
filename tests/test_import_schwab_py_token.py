@@ -51,3 +51,36 @@ def test_does_not_overwrite_a_newer_schwabdev_token(tmp_path):
     assert import_token(source, destination) is False
     with sqlite3.connect(destination) as con:
         assert con.execute("SELECT access_token FROM schwabdev").fetchone()[0] == "new-access"
+
+
+def test_syncs_fresher_shared_access_for_the_same_login(tmp_path):
+    source, destination = tmp_path / "token.json", tmp_path / "tokens.db"
+    now = datetime.now(timezone.utc).timestamp()
+    created = now - 3600
+    _write_token(source, created, access="initial")
+    assert import_token(source, destination) is True
+
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["token"]["access_token"] = "fresh-access"
+    payload["token"]["expires_at"] = now + 1700
+    source.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert import_token(source, destination) is True
+    with sqlite3.connect(destination) as con:
+        access, refresh = con.execute(
+            "SELECT access_token, refresh_token FROM schwabdev"
+        ).fetchone()
+    assert (access, refresh) == ("fresh-access", "refresh")
+
+
+def test_expired_shared_access_does_not_replace_current_database_access(tmp_path):
+    source, destination = tmp_path / "token.json", tmp_path / "tokens.db"
+    now = datetime.now(timezone.utc).timestamp()
+    _write_token(source, now - 3600, access="old-access")
+    assert import_token(source, destination) is True
+    with sqlite3.connect(destination) as con:
+        con.execute("UPDATE schwabdev SET access_token = ?", ("working-access",))
+        con.commit()
+    assert import_token(source, destination) is False
+    with sqlite3.connect(destination) as con:
+        assert con.execute("SELECT access_token FROM schwabdev").fetchone()[0] == "working-access"

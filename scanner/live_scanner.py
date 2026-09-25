@@ -14,12 +14,14 @@ Bar routing inside _on_bar():
 from __future__ import annotations
 
 import logging
+from collections import deque
 from datetime import date
+from threading import Lock
 from typing import Optional
 
 import pandas as pd
 
-from scanner.alert_provenance import effective_revision, source_bar, system_revision
+from scanner.alert_provenance import calculation_version, effective_revision, source_bar, system_revision
 from scanner.alert_sink import AlertSink
 from scanner.data.interface import DataFeed
 from scanner.conditions import ConditionCtx
@@ -73,6 +75,10 @@ class LiveScanner:
         self._opening_ranges = OpeningRangeBook()
         self._orb_trade = OrbTradeCross()
         self._last_symbol_bar: dict[str, dict] = {}
+        # The chart API reads from another thread. Keep the exact seeded/live
+        # minute bars separately from indicator candles, under a short lock.
+        self._chart_lock = Lock()
+        self._chart_minutes: dict[str, deque[dict]] = {}
         # Universe profiles. None until attach_profiles(); when absent every
         # alert passes, so this is inert unless deliberately wired up.
         self._profiles = None
@@ -267,6 +273,7 @@ class LiveScanner:
         """
         eng = self._profiles
         alert["source_bar"] = source_bar(bar)
+        alert["indicator_calculation_version"] = calculation_version()
         from scanner.settings import settings
         config_hash = alert.get("config_hash") or settings.hash
         if source == "system":
@@ -437,6 +444,7 @@ class LiveScanner:
         session = self._advance_series(state, bar)
         self._opening_ranges.on_bar(bar)
         self._last_symbol_bar[state.symbol] = dict(bar)
+        self._record_chart_bar(bar)
         if self._custom_evaluator is not None:
             self._custom_evaluator.prime_bar(
                 state,
@@ -445,6 +453,22 @@ class LiveScanner:
                 spy_mom_15m=(self._spy_state.mom_15m_pct if self._spy_state else None),
             )
         return True
+
+    def _record_chart_bar(self, bar: dict) -> None:
+        # Some narrow diagnostic tests construct a scanner with __new__ and
+        # intentionally omit optional stores; production always uses __init__.
+        if not hasattr(self, "_chart_lock"):
+            return
+        symbol = str(bar.get("symbol") or "").upper()
+        if not symbol:
+            return
+        with self._chart_lock:
+            self._chart_minutes.setdefault(symbol, deque(maxlen=800)).append(dict(bar))
+
+    def chart_bars(self, symbol: str) -> list[dict]:
+        """A thread-safe copy of today's seeded and streamed minute bars."""
+        with self._chart_lock:
+            return list(self._chart_minutes.get(symbol.upper(), ()))
 
     def _refresh_opening_rvol_ranks(self) -> None:
         """Rank loaded symbols by first-five-minute RVOL, highest first.
@@ -666,6 +690,7 @@ class LiveScanner:
             if self._spy_state is None:
                 return
             self._spy_state.on_bar(bar)
+            self._record_chart_bar(bar)
             self._latest_spy_bar = bar
             self._regime = classify_market(bar["close"], self._spy_state.vwap)
             log.debug("SPY: close=%.2f vwap=%.2f regime=%s",
@@ -706,6 +731,7 @@ class LiveScanner:
         session = self._advance_series(state, bar)
         self._opening_ranges.on_bar(bar)
         self._last_symbol_bar[state.symbol] = dict(bar)
+        self._record_chart_bar(bar)
         if _t:
             _t1 = perf_counter_ns(); bar_timer.record("series", _t1 - _t0); _t0 = _t1
 
@@ -894,6 +920,8 @@ class LiveScanner:
         self._opening_ranges.clear()
         self._orb_trade.clear()
         self._last_symbol_bar.clear()
+        with self._chart_lock:
+            self._chart_minutes.clear()
         self._sector_session_bars.clear()
         self._regime = MarketRegime.NEUTRAL
         self.sink.clear()

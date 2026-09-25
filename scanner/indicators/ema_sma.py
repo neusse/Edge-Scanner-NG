@@ -1,12 +1,17 @@
+"""Compatibility interface for Classic EMA/SMA calculations."""
+from __future__ import annotations
+
 import math
 
 import pandas as pd
 
+from scanner.indicators.classic import calculate
+
 
 class SeededEMA:
-    """EMA over completed closes, available after an SMA-sized warm-up."""
+    """Completed-close EMA tracker; each value comes from Pandas TA Classic."""
 
-    __slots__ = ("period", "value", "prev", "_seed")
+    __slots__ = ("period", "value", "prev", "_closes")
 
     def __init__(self, period: int) -> None:
         if period < 1:
@@ -14,43 +19,56 @@ class SeededEMA:
         self.period = period
         self.value: float | None = None
         self.prev: float | None = None
-        self._seed: list[float] = []
+        self._closes: list[float] = []
 
     def push(self, close: float) -> float | None:
         price = float(close)
         self.prev = self.value
         if not math.isfinite(price):
+            self._closes.clear()
+            self.value = self.prev = None
+            return None
+        self._closes.append(price)
+        if len(self._closes) < self.period:
             self.value = None
-            self.prev = None
-            self._seed.clear()
-        elif self.value is None:
-            self._seed.append(price)
-            if len(self._seed) == self.period:
-                self.value = sum(self._seed) / self.period
-                self._seed.clear()
-        else:
-            self.value += (2.0 / (self.period + 1)) * (price - self.value)
+            return None
+        last = calculate(pd.DataFrame({"close": pd.Series(self._closes, dtype=float)}),
+                         "ema", self.period)["value"].iloc[-1]
+        self.value = None if pd.isna(last) else float(last)
         return self.value
+
+    def seed(self, closes: list[float]) -> pd.Series:
+        """Warm from completed closes with one Classic calculation per valid run."""
+        prices = pd.Series(closes, dtype=float)
+        values = pd.Series(float("nan"), index=prices.index, dtype=float)
+        self._closes = []
+        self.value = self.prev = None
+        start = 0
+        for i, price in enumerate(prices):
+            if math.isfinite(price):
+                continue
+            if i - start >= self.period:
+                values.iloc[start:i] = calculate(
+                    pd.DataFrame({"close": prices.iloc[start:i]}), "ema", self.period
+                )["value"].to_numpy()
+            start = i + 1
+        if len(prices) - start >= self.period:
+            values.iloc[start:] = calculate(
+                pd.DataFrame({"close": prices.iloc[start:]}), "ema", self.period
+            )["value"].to_numpy()
+        self._closes = prices.iloc[start:].tolist()
+        if len(values):
+            last = values.iloc[-1]
+            self.value = None if pd.isna(last) else float(last)
+        if len(values) > 1:
+            previous = values.iloc[-2]
+            self.prev = None if pd.isna(previous) else float(previous)
+        return values
 
 
 def ema(close: pd.Series, span: int) -> pd.Series:
-    """SMA-seeded EMA over completed prices, with NaN during warm-up."""
-    tracker = SeededEMA(span)
-    return pd.Series([tracker.push(price) for price in close], index=close.index,
-                     dtype=float)
+    return calculate(pd.DataFrame({"close": close}), "ema", span)["value"]
 
 
 def sma(close: pd.Series, length: int) -> pd.Series:
-    """Simple moving average over `length` periods."""
-    return close.rolling(length).mean()
-
-
-def ema_update(prev: float | None, price: float, span: int) -> float:
-    """Incremental EMA update for live bar-by-bar processing.
-
-    Seeds from `price` if `prev` is None (first bar of session).
-    """
-    if prev is None:
-        return price
-    alpha = 2.0 / (span + 1)
-    return alpha * price + (1.0 - alpha) * prev
+    return calculate(pd.DataFrame({"close": close}), "sma", length)["value"]

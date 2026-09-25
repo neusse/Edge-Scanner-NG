@@ -275,6 +275,7 @@ class FeedHub:
         # Unknown is explicit; never infer today's rules for an old event.
         a.setdefault("detector_setup_revision", None)
         a.setdefault("detector_revision", None)
+        a.setdefault("indicator_calculation_version", None)
         a.setdefault("source_bar", None)
         with self._lock:
             self.published += 1

@@ -1,6 +1,7 @@
 # Python 3.11+
 alpaca-py>=0.44.0
 pandas>=3.0.6
+pandas-ta-classic==0.8.32  # standard indicator calculations; pin alert math
 pandas-market-calendars>=5.4.0
 numpy>=1.26
 pyarrow>=14.0.0

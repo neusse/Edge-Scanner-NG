@@ -143,7 +143,7 @@ function StockCheck({ setupId, universeOnly }: { setupId: string; universeOnly?:
           {sym && <span className="faint" style={{ fontSize: 11 }}>{inUniverse.includes(sym.toUpperCase()) ? 'in the universe' : 'not in the universe'}</span>}
         </div>
         <div className="faint" style={{ padding: '0 10px 10px', fontSize: 11 }}>
-          Universe filter first (data/universe.csv), then {universeOnly ? 'every gate of the setup' : 'each alert of the setup'} against the live state. Read-only, nothing is emitted.
+          Universe filter first (data/universe.csv), then {universeOnly ? 'every gate of the setup' : 'each trigger of the setup'} against the live state. Read-only, nothing is emitted.
         </div>
       </Card>
       {err && <div className="wf-error">{err}</div>}
@@ -181,7 +181,7 @@ function StockCheck({ setupId, universeOnly }: { setupId: string; universeOnly?:
                 <span className="dim chk-reason">{t.fired_last_bar ? `fired on the last bar: ${t.note}` : t.fires_today ? `${t.fires_today} today` : 'not firing'}{t.last_eval ? ` · ${fmtTimeET(t.last_eval)}` : ''}</span>
               </div>
             ))}
-            {res.triggers.length === 0 && <div className="faint" style={{ padding: 10 }}>No alerts configured.</div>}
+            {res.triggers.length === 0 && <div className="faint" style={{ padding: 10 }}>No triggers configured.</div>}
           </div>
         </Card>
       )}
@@ -199,7 +199,7 @@ function TriggerCard({ t, def, onChange, onRemove }: { t: SetupTrigger; def: Tri
         <span className="trig-name">{def.name}</span>
         <span className="faint" style={{ fontSize: 10.5 }} title={def.desc}>{def.category}</span>
         <span className="flex-spacer" />
-        <button className="wf-ctl close" title="Remove alert" onClick={onRemove}>🗑</button>
+        <button className="wf-ctl close" title="Remove trigger" onClick={onRemove}>🗑</button>
       </div>
       <div className="trig-desc">{def.desc}</div>
       {def.options.length > 0 && (
@@ -336,8 +336,8 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
     if (!d) return
     const name = d.name.trim()
     if (!name) { setError('Name is required'); return }
-    if (!d.triggers.length) { setError('Add at least one alert'); return }
-    if (d.triggers.some(t => (setups.catalogById[t.id]?.options.length ?? 0) > 0 && t.options.length === 0)) { setError('Every alert needs at least one option selected'); return }
+    if (!d.triggers.length) { setError('Add at least one trigger'); return }
+    if (d.triggers.some(t => (setups.catalogById[t.id]?.options.length ?? 0) > 0 && t.options.length === 0)) { setError('Every trigger needs at least one option selected'); return }
     const id = d.id || newId(name)
     setBusy(true)
     try {
@@ -440,8 +440,8 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
     : (uniSel || uniNew)
     ? [{ key: 'general', label: 'Filter' }]
     : sysCode
-    ? [{ key: 'general', label: 'General' }, { key: 'alerts', label: 'Alerts' }, { key: 'params', label: 'Parameters' }, { key: 'summary', label: 'Summary' }, { key: 'check', label: 'Stock check' }, { key: 'log', label: 'Change log' }]
-    : [{ key: 'general', label: 'General' }, { key: 'alerts', label: 'Alerts' }, { key: 'params', label: 'Parameters' }, { key: 'summary', label: 'Summary' }, { key: 'check', label: 'Stock check' }]
+    ? [{ key: 'general', label: 'General' }, { key: 'alerts', label: 'Triggers' }, { key: 'params', label: 'Checks' }, { key: 'summary', label: 'Summary' }, { key: 'check', label: 'Stock check' }, { key: 'log', label: 'Change log' }]
+    : [{ key: 'general', label: 'General' }, { key: 'alerts', label: 'Triggers' }, { key: 'params', label: 'Checks' }, { key: 'summary', label: 'Summary' }, { key: 'check', label: 'Stock check' }]
 
   const header = (
     <div className="cfg-head">
@@ -453,8 +453,8 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
           <span className="badge muted mono" title="Setup code on the feed">{sysCode}</span>
           <span className="flex-spacer" />
           {sysStats && <span className="faint mono" style={{ fontSize: 11 }} title="fired / evaluated today">{sysStats.fired} fired / {sysStats.evals.toLocaleString()} evals</span>}
-          <button className="btn sm" onClick={duplicate} title="Create a custom setup that fires when this one fires, then add alerts to it">⧉ Duplicate as custom</button>
-          <button className="btn sm danger" disabled={!settings || busy} onClick={() => { if (confirm(`Reset every parameter of ${sysCode} to the code defaults?`)) void runSettings(() => api.settings.reset({ setup: sysCode })) }}>Reset parameters</button>
+          <button className="btn sm" onClick={duplicate} title="Create a custom setup that fires when this one fires, then add triggers to it">⧉ Duplicate as custom</button>
+          <button className="btn sm danger" disabled={!settings || busy} onClick={() => { if (confirm(`Reset every setting of ${sysCode} to the code defaults?`)) void runSettings(() => api.settings.reset({ setup: sysCode })) }}>Reset settings</button>
         </>
       ) : toplistSel ? (
         <>
@@ -498,7 +498,7 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
           </div>
           {settings && sysCode && (
             <div className="row" style={{ gap: 6 }}>
-              <select className="input sm" value="" onChange={e => { const n = e.target.value; if (n && confirm(`Apply preset "${n}"? This replaces all current parameter values.`)) void runSettings(() => api.settings.applyPreset(n)) }}>
+              <select className="input sm" value="" onChange={e => { const n = e.target.value; if (n && confirm(`Apply preset "${n}"? This replaces all current setting values.`)) void runSettings(() => api.settings.applyPreset(n)) }}>
                 <option value="">Presets ({settings.presets.length})…</option>
                 {settings.presets.map(p => <option key={p.name} value={p.name}>{p.name} · {p.n_modified} edited</option>)}
               </select>
@@ -512,7 +512,7 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
 
         {nModified > 0 && sysCode && (
           <div className="cfg-warn">
-            <b>{nModified} parameter{nModified > 1 ? 's' : ''} differ from the defaults.</b> Every alert carries <span className="mono">config_hash {settings?.hash}</span> and <span className="mono">modified: true</span>, so alerts fired under edited settings can be told apart from the default definition.
+            <b>{nModified} setting{nModified > 1 ? 's' : ''} differ from the defaults.</b> Every alert carries <span className="mono">config_hash {settings?.hash}</span> and <span className="mono">modified: true</span>, so alerts fired under edited settings can be told apart from the default definition.
             <button className="btn sm" style={{ marginLeft: 10 }} onClick={() => { if (confirm('Reset ALL setups to the code defaults?')) void runSettings(() => api.settings.reset({})) }}>Reset all</button>
           </div>
         )}
@@ -535,7 +535,7 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <div className="cfg-nav-title">{it.name}</div>
                   </span>
-                  {!!it.edited && <span className="badge muted" title="edited parameters">{it.edited}</span>}
+                  {!!it.edited && <span className="badge muted" title="edited settings">{it.edited}</span>}
                   {!!it.fired && <span className="faint mono" style={{ fontSize: 10 }} title="fired today">{it.fired}</span>}
                   {it.setup && (
                     <span className={`cfg-switch${it.setup.enabled ? ' on' : ''}`} title={it.setup.enabled ? 'Enabled (click to disable)' : 'Disabled (click to enable)'}
@@ -589,7 +589,7 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
             {sel.kind === 'none' && section === 'setups' && (
               <div className="wf-empty" style={{ height: 200 }}>
                 <b>{setups.loaded ? 'No setups yet' : 'Loading…'}</b>
-                <span>{setups.loaded ? 'Click + Add setup to compose one from the alert catalog.' : 'Fetching the setups.'}</span>
+                <span>{setups.loaded ? 'Click + Add setup to compose one from the trigger catalog.' : 'Fetching the setups.'}</span>
               </div>
             )}
             {/* ── system setup tabs ── */}
@@ -649,7 +649,7 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
               <div className="cfg-cards">
                 <Card title="About this setup">
                   <div style={{ padding: 10 }} className="dim">
-                    <p style={{ marginBottom: 6 }}><b style={{ color: 'var(--text)' }}>{setups.systemNames[sysCode] ?? sysCode}</b> is a built-in setup provided by an engine plugin. You can rename it and tune its thresholds on the Parameters tab, or duplicate it as a custom setup to add alerts on top.</p>
+                    <p style={{ marginBottom: 6 }}><b style={{ color: 'var(--text)' }}>{setups.systemNames[sysCode] ?? sysCode}</b> is a built-in setup provided by an engine plugin. You can rename it and tune its thresholds on the Checks tab, or duplicate it as a custom setup to add triggers on top.</p>
                     <p>Alerts publish on the unified feed with <span className="mono">setup: "{sysCode}"</span>. Renaming changes only the display name; the code never changes.</p>
                   </div>
                 </Card>
@@ -658,7 +658,7 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
                     <div className="row" style={{ padding: 10, gap: 18 }}>
                       <span><span className="faint">evaluations</span> <b className="mono">{sysStats.evals.toLocaleString()}</b></span>
                       <span><span className="faint">fired</span> <b className="mono">{sysStats.fired}</b></span>
-                      <span><span className="faint">edited parameters</span> <b className="mono">{modifiedCount(sysCode)}</b></span>
+                      <span><span className="faint">edited settings</span> <b className="mono">{modifiedCount(sysCode)}</b></span>
                     </div>
                   </Card>
                 )}
@@ -675,8 +675,8 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
             {sysCode && tab === 'alerts' && (
               <div className="cfg-cards">
                 <Card title="What makes it fire" extra="fixed by the engine">
-                  <ul className="cfg-list"><li>{setups.catalogById[`setup:${sysCode}`]?.desc || "The rules of this setup are fixed by the engine plugin that provides it. Its thresholds, with today's gate pass rates, are on the Parameters tab."}</li></ul>
-                  <div className="dim" style={{ padding: '0 10px 10px', fontSize: 11.5 }}>To combine this setup with other alerts (for example, fire {setups.systemNames[sysCode]} OR a bullish engulfing 5-min candle), use <b>Duplicate as custom</b>: the copy gets a "{setups.systemNames[sysCode]}" alert that fires exactly when the engine emits {sysCode}.</div>
+                  <ul className="cfg-list"><li>{setups.catalogById[`setup:${sysCode}`]?.desc || "The rules of this setup are fixed by the engine plugin that provides it. Its thresholds, with today's gate pass rates, are on the Checks tab."}</li></ul>
+                  <div className="dim" style={{ padding: '0 10px 10px', fontSize: 11.5 }}>To combine this setup with other triggers (for example, fire {setups.systemNames[sysCode]} OR a bullish engulfing 5-min candle), use <b>Duplicate as custom</b>: the copy gets a "{setups.systemNames[sysCode]}" trigger that fires exactly when the engine emits {sysCode}.</div>
                 </Card>
               </div>
             )}
@@ -720,7 +720,7 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
                 <Card title="Setup summary">
                   <div className="sum-sec">Universe</div>
                   <ul className="cfg-list"><li>Only symbols in the scanner universe (data/universe.csv, liquidity screen) are evaluated.</li></ul>
-                  <div className="sum-sec">Alerts</div>
+                  <div className="sum-sec">Triggers</div>
                   <ul className="cfg-list"><li>{setups.catalogById[`setup:${sysCode}`]?.desc || 'Fixed by the engine plugin that provides this setup.'}</li></ul>
                   <div className="sum-sec">Gates and thresholds in force</div>
                   <ul className="cfg-list">
@@ -761,11 +761,11 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
               <div className="cfg-cards">
                 <Card title="General">
                   <div className="cfg-form">
-                    <label className="field"><span>Alert mode</span>
+                    <label className="field"><span>Combine triggers</span>
                       <select className="input" value={current.mode} onChange={e => edit({ mode: e.target.value as CustomSetup['mode'] })}>
-                        <option value="or">OR · any selected alert fires the setup</option>
-                        <option value="and">AND · every selected alert must fire within a window</option>
-                        <option value="atleast">AT LEAST · N of the selected alerts, within a window</option>
+                        <option value="or">OR · any selected trigger fires the setup</option>
+                        <option value="and">AND · every selected trigger must fire within a window</option>
+                        <option value="atleast">AT LEAST · N selected triggers within a window</option>
                       </select>
                     </label>
                     {current.mode === 'atleast' && (
@@ -830,28 +830,28 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
             {!sysCode && current && tab === 'alerts' && (
               <div className="cfg-cards">
                 <div className="row" style={{ gap: 8 }}>
-                  <span className="faint" style={{ fontSize: 11 }}>Alert mode</span>
+                  <span className="faint" style={{ fontSize: 11 }}>Combine triggers</span>
                   <select className="input sm" value={current.mode} onChange={e => edit({ mode: e.target.value as CustomSetup['mode'] })} style={{ width: 92 }}><option value="or">or</option><option value="and">and</option><option value="atleast">at least</option></select>
                   {current.mode === 'atleast' && (
                     <input className="input sm mono" type="number" min={1} max={Math.max(1, current.triggers.length)}
-                      value={current.min_triggers ?? 2} title="How many of the selected alerts must fire"
+                      value={current.min_triggers ?? 2} title="How many of the selected triggers must fire"
                       onChange={e => edit({ min_triggers: Math.max(1, Number(e.target.value) || 1) })} style={{ width: 48 }} />
                   )}
-                  <button className="btn sm" onClick={() => setPicker(true)}>☰ Select alerts</button>
+                  <button className="btn sm" onClick={() => setPicker(true)}>☰ Select triggers</button>
                   <span className="faint" style={{ fontSize: 11 }}>{current.triggers.length} selected · {setups.catalog.length} available</span>
                 </div>
                 {current.triggers.map((t, i) => {
                   const def = setups.catalogById[t.id]
-                  if (!def) return <div key={t.id} className="wf-error">Unknown alert {t.id}</div>
+                  if (!def) return <div key={t.id} className="wf-error">Unknown trigger {t.id}</div>
                   return <TriggerCard key={t.id} t={t} def={def} onChange={p => editTrigger(i, p)} onRemove={() => edit({ triggers: current.triggers.filter((_, j) => j !== i) })} />
                 })}
-                {current.triggers.length === 0 && <div className="wf-empty" style={{ height: 160 }}><b>No alerts yet</b><span>Click Select alerts to choose from the catalog.</span></div>}
+                {current.triggers.length === 0 && <div className="wf-empty" style={{ height: 160 }}><b>No triggers yet</b><span>Click Select triggers to choose from the catalog.</span></div>}
                 {picker && <TriggerPicker catalog={setups.catalog} value={current.triggers} onChange={triggers => edit({ triggers })} onClose={() => setPicker(false)} />}
               </div>
             )}
             {!sysCode && current && tab === 'params' && (
               <div className="cfg-cards">
-                <Card title="Parameters">
+                <Card title="Checks">
                   <div className="faint" style={{ padding: '0 10px 8px', fontSize: 11 }}>
                     What the stock has to be doing <b>right now</b> for this setup to fire: relative
                     volume, distance from VWAP, percent change, candle streaks. ANDed with each other
@@ -859,7 +859,7 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
                     never touches another setup.
                   </div>
                   <ConditionList conditions={current.parameters ?? []} kind="dynamic"
-                    addLabel="+ Add parameter"
+                    addLabel="+ Add check"
                     onChange={parameters => edit({ parameters })} />
                 </Card>
                 <Card title="Universe" extra="what kind of stock, fixed for the session">
@@ -873,7 +873,7 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
                 <Card title="Setup summary">
                   {(() => {
                     const s = current.summary ?? setups.customById[current.id]?.summary
-                    const alerts = current.triggers.flatMap(t => {
+                    const triggers = current.triggers.flatMap(t => {
                       const d = setups.catalogById[t.id]
                       const opts = t.options.length ? t.options : ['']
                       return opts.map(o => {
@@ -887,12 +887,12 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
                         <div className="sum-sec">Important conditions</div>
                         <ul className="cfg-list">
                           <li>{s?.universe ?? 'Only symbols in the scanner universe (data/universe.csv) are scanned.'}</li>
-                          <li>{current.mode === 'or' ? 'Any one of the alerts below fires the setup.' : `All alerts below must fire within ${current.and_window_min} minutes.`}</li>
+                          <li>{current.mode === 'or' ? 'Any one of the triggers below fires the setup.' : current.mode === 'atleast' ? `At least ${current.min_triggers ?? 2} of the triggers below must match within ${current.and_window_min} minutes.` : `All triggers below must match within ${current.and_window_min} minutes.`}</li>
                           <li>{{ all: 'Long and short alerts.', long: 'Long alerts only.', short: 'Short alerts only.' }[current.direction]} {current.sessions.includes('pre') ? 'Premarket and regular session.' : 'Regular session only.'}</li>
                           <li>{current.repeat_sec ? `The same symbol does not repeat for ${current.repeat_sec} seconds.` : 'The same symbol + alert does not repeat within the feed\'s 5-minute cooldown.'} {!current.enabled && <b className="down">Setup is disabled.</b>}</li>
                         </ul>
-                        <div className="sum-sec">Alerts</div>
-                        <ul className="cfg-list">{alerts.map((a, i) => <li key={i}>[ {a} ]</li>)}{alerts.length === 0 && <li className="faint">none</li>}</ul>
+                        <div className="sum-sec">Triggers</div>
+                        <ul className="cfg-list">{triggers.map((a, i) => <li key={i}>[ {a} ]</li>)}{triggers.length === 0 && <li className="faint">none</li>}</ul>
                         {current.pending_filters.length > 0 && (<><div className="sum-sec">Filters (not enforced yet)</div><ul className="cfg-list">{current.pending_filters.map((f, i) => <li key={i} className="dim">{f}</li>)}</ul></>)}
                         {customStats && (<><div className="sum-sec">Fired today</div><ul className="cfg-list">{Object.entries(customStats).map(([k, n]) => <li key={k}><span className="mono">{k}</span> · {n}</li>)}</ul></>)}
                       </>
@@ -919,7 +919,7 @@ export function SetupsPanel({ onClose }: { onClose(): void }) {
           ) : sysCode ? (
             <>
               <span className="flex-spacer" />
-              {dirtyKeys.length > 0 && <span className="dim" style={{ fontSize: 11 }}>{dirtyKeys.length} unsaved parameter change{dirtyKeys.length > 1 ? 's' : ''}</span>}
+              {dirtyKeys.length > 0 && <span className="dim" style={{ fontSize: 11 }}>{dirtyKeys.length} unsaved setting change{dirtyKeys.length > 1 ? 's' : ''}</span>}
               <button className="btn sm" disabled={!dirtyKeys.length || busy} onClick={() => setParamDraft({})}>Discard</button>
               <button className="btn primary" disabled={!dirtyKeys.length || busy} onClick={saveParams}>{busy ? 'Saving…' : 'Save & apply'}</button>
             </>

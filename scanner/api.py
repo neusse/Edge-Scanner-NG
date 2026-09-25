@@ -15,7 +15,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 import pandas as pd
-from fastapi import FastAPI, WebSocket
+from fastapi import Body, FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
 
@@ -29,7 +29,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-_BAR_CACHE_TTL     = 60     # seconds before /api/bars cache expires
+_BAR_RETRY_AFTER_FAILURE = 300  # avoid hammering history while stream bars remain usable
+_INTRADAY_MINUTES = {"1min": 1, "5min": 5, "15min": 15,
+                     "30min": 30, "1hour": 60, "4hour": 240}
 
 
 # ── App state (shared between scanner thread and FastAPI) ─────────────────────
@@ -50,8 +52,9 @@ class AppState:
         # every consumer subscribes to /ws/alerts with a filter. Created here so
         # the API and the sinks share one instance; run_live.py taps the sinks.
         self.hub: FeedHub = hub or FeedHub(keep_days=keep_days)
-        # bar_cache: (symbol, timeframe) -> (fetched_at, data_list)
-        self._bar_cache: dict[tuple[str, str], tuple[float, list]] = {}
+        # Warmed historical chart context, fetched once per ET date and frame.
+        self._bar_cache: dict[tuple[str, str], tuple[str, list[dict]]] = {}
+        self._bar_retry_after: dict[tuple[str, str], float] = {}
         self._premarket_cache: tuple[float, dict] | None = None
 
 
@@ -154,6 +157,19 @@ def create_app(app_state: AppState) -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def replay_is_read_only(request: _Request, call_next):
+        if getattr(app_state, "replay", None) is not None:
+            if (request.url.path.startswith("/api/v2/fundamentals/")
+                    or request.url.path == "/api/v2/news"):
+                return JSONResponse({"error": "as-of fundamentals and news were not captured for replay"},
+                                    status_code=409)
+            if (request.method not in ("GET", "HEAD", "OPTIONS")
+                    and request.url.path != "/api/replay/control"):
+                return JSONResponse({"error": "replay configuration is frozen; edit live configs outside replay"},
+                                    status_code=403)
+        return await call_next(request)
+
     # ── Startup: launch WS broadcaster ───────────────────────────────────────
 
     @app.on_event("startup")
@@ -206,21 +222,57 @@ def create_app(app_state: AppState) -> FastAPI:
         """Who is subscribed to the unified feed and with which filter."""
         return JSONResponse({"clients": app_state.hub.clients(), "published": app_state.hub.published})
 
+    @app.get("/api/replay/status")
+    async def replay_status() -> JSONResponse:
+        controller = getattr(app_state, "replay_controller", None)
+        if controller is None:
+            return JSONResponse({"error": "not in replay mode"}, status_code=404)
+        return JSONResponse({**app_state.replay, **controller.status()})
+
+    @app.post("/api/replay/control")
+    async def replay_control(body: dict = Body(...)) -> JSONResponse:
+        controller = getattr(app_state, "replay_controller", None)
+        if controller is None:
+            return JSONResponse({"error": "not in replay mode"}, status_code=404)
+        try:
+            result = controller.control(str(body.get("action") or ""), speed=body.get("speed"))
+            app_state.replay["speed"] = result["speed"]
+            return JSONResponse(result)
+        except (TypeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
     # ── REST: bars proxy ──────────────────────────────────────────────────────
 
     @app.get("/api/bars/{symbol}/{timeframe}")
-    async def get_bars(symbol: str, timeframe: str) -> JSONResponse:
-        """Proxy Alpaca bars with a 60-second memory cache.
-
-        timeframe: "5min" (today's intraday) or "1day" (historical daily)
-        """
+    async def get_bars(symbol: str, timeframe: str, with_indicators: bool = False,
+                       extended: bool = False) -> JSONResponse:
+        """Warm chart history once, then merge Edge's seeded/streamed bars."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
         symbol = symbol.upper()
+        live = (app_state.scanner.chart_bars(symbol)
+                if hasattr(app_state.scanner, "chart_bars") else [])
+        chart_asof = _chart_asof(live)
+        if getattr(app_state, "replay", None) is not None:
+            if timeframe not in _INTRADAY_MINUTES and timeframe not in {"1day", "1week"}:
+                return JSONResponse({"error": f"unknown timeframe: {timeframe}"}, status_code=400)
+            return JSONResponse(_bars_payload(_replay_chart_bars(app_state.scanner, symbol, timeframe),
+                                              timeframe, with_indicators, extended, chart_asof, live))
         cache_key = (symbol, timeframe)
         now = time.monotonic()
-
+        session_day = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        if timeframe not in _INTRADAY_MINUTES and timeframe not in {"1day", "1week"}:
+            return JSONResponse({"error": f"unknown timeframe: {timeframe}"}, status_code=400)
         cached = app_state._bar_cache.get(cache_key)
-        if cached and (now - cached[0]) < _BAR_CACHE_TTL:
-            return JSONResponse({"bars": cached[1]})
+        if cached and cached[0] == session_day:
+            return JSONResponse(_bars_payload(_merge_chart_bars(cached[1], live, timeframe),
+                                              timeframe, with_indicators, extended, chart_asof, live))
+        if now < app_state._bar_retry_after.get(cache_key, 0):
+            if live and timeframe in _INTRADAY_MINUTES:
+                return JSONResponse({**_bars_payload(_merge_chart_bars([], live, timeframe),
+                                                     timeframe, with_indicators, extended, chart_asof, live),
+                                     "coverage": "session_only"})
+            return JSONResponse({"error": "chart history temporarily unavailable"}, status_code=503)
 
         try:
             from datetime import date, timedelta
@@ -248,15 +300,19 @@ def create_app(app_state: AppState) -> FastAPI:
                 df = await asyncio.get_event_loop().run_in_executor(
                     None, lambda: app_state.feed.get_bars_range(symbol, "1Week", start, end)
                 )
-            else:
-                return JSONResponse({"error": f"unknown timeframe: {timeframe}"}, status_code=400)
-
             bars = _df_to_bars(df)
-            app_state._bar_cache[cache_key] = (now, bars)
-            return JSONResponse({"bars": bars})
+            app_state._bar_cache[cache_key] = (session_day, bars)
+            app_state._bar_retry_after.pop(cache_key, None)
+            return JSONResponse(_bars_payload(_merge_chart_bars(bars, live, timeframe),
+                                              timeframe, with_indicators, extended, chart_asof, live))
 
         except Exception as exc:
             log.warning("API: bars fetch error %s/%s: %s", symbol, timeframe, exc)
+            app_state._bar_retry_after[cache_key] = now + _BAR_RETRY_AFTER_FAILURE
+            if live and timeframe in _INTRADAY_MINUTES:
+                return JSONResponse({**_bars_payload(_merge_chart_bars([], live, timeframe),
+                                                     timeframe, with_indicators, extended, chart_asof, live),
+                                     "coverage": "session_only"})
             return JSONResponse({"error": str(exc)}, status_code=500)
 
     # ── REST: universe ────────────────────────────────────────────────────────
@@ -383,7 +439,14 @@ def create_app(app_state: AppState) -> FastAPI:
 
     # Dashboard V2: /api/v2/* + /v2 static (scanner/api_v2.py).
     from scanner.api_v2 import register_v2_routes, mount_v2_static
-    register_v2_routes(app, app_state)
+    replay_input = getattr(app_state, "replay_input", None)
+    if replay_input is None:
+        register_v2_routes(app, app_state)
+    else:
+        config = replay_input.root / "config"
+        register_v2_routes(app, app_state, setups_dir=config / "setups",
+                           universe_csv=config / "universe.csv",
+                           sector_csv=config / "sector_map.csv")
     mount_v2_static(app)
 
     @app.get("/", include_in_schema=False)
@@ -405,6 +468,93 @@ def _sanitize(obj: object) -> object:
     return obj
 
 
+def _chart_asof(live: list[dict]) -> str | None:
+    if not live:
+        return None
+    stamps = [pd.Timestamp(bar["timestamp"]) for bar in live if bar.get("timestamp") is not None]
+    return (max(stamps) + pd.Timedelta(minutes=1)).isoformat() if stamps else None
+
+
+def _bars_payload(bars: list[dict], timeframe: str, with_indicators: bool,
+                  extended: bool, asof: str | None = None,
+                  minute_bars: list[dict] | None = None) -> dict:
+    payload = {"bars": bars}
+    if not with_indicators:
+        return payload
+    from scanner.indicators.classic import VERSION, calculate
+    names = ("ema9", "ema21", "sma50", "sma100", "sma200", "vwap")
+    payload["indicator_version"] = VERSION
+    payload["asof"] = asof
+    payload["indicators"] = {name: [] for name in names}
+    if not bars:
+        return payload
+    frame = pd.DataFrame([{"open": b["o"], "high": b["h"], "low": b["l"],
+                           "close": b["c"], "volume": b["v"]} for b in bars],
+                         index=pd.DatetimeIndex(pd.to_datetime([b["t"] for b in bars], utc=True)))
+    et = frame.index.tz_convert("America/New_York")
+    rth = (et.hour * 60 + et.minute >= 570) & (et.hour * 60 + et.minute < 960)
+    intraday = timeframe in _INTRADAY_MINUTES
+    overlay_frame = frame[(rth if not extended else slice(None))] if intraday else frame
+    vwap_frame = frame[rth] if intraday else frame.iloc[:0]
+
+    def points(source: pd.DataFrame, study: str, length: int | None) -> list[dict]:
+        if source.empty:
+            return []
+        values = calculate(source, study, length)["value"]
+        return [{"t": stamp.isoformat(), "value": float(value)}
+                for stamp, value in values.items() if pd.notna(value)]
+
+    for period in (9, 21):
+        payload["indicators"][f"ema{period}"] = points(overlay_frame, "ema", period)
+    for period in (50, 100, 200):
+        payload["indicators"][f"sma{period}"] = points(overlay_frame, "sma", period)
+    payload["indicators"]["vwap"] = points(vwap_frame, "vwap", None)
+    # A chart's 5m/15m OHLC typical prices do not reproduce the detector's
+    # VWAP of streamed 1m typical prices. Replace the current-session points
+    # using Edge's stored 1m bars, sampled at each displayed candle's close.
+    if intraday and minute_bars and vwap_frame is not None:
+        minute_rows = []
+        for raw in minute_bars:
+            try:
+                stamp = pd.Timestamp(raw["timestamp"])
+                stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp
+                stamp = stamp.tz_convert("America/New_York")
+                minute_of_day = stamp.hour * 60 + stamp.minute
+                if 570 <= minute_of_day < 960:
+                    minute_rows.append((stamp, raw))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if minute_rows:
+            minute_rows.sort(key=lambda row: row[0])
+            m_frame = pd.DataFrame(
+                [{k: float(raw[k]) for k in ("high", "low", "close", "volume")}
+                 for _, raw in minute_rows],
+                index=pd.DatetimeIndex([stamp for stamp, _ in minute_rows]),
+            )
+            exact = calculate(m_frame, "vwap")["value"]
+            width = _INTRADAY_MINUTES[timeframe]
+            chart_keys = {pd.Timestamp(b["t"]).tz_convert("America/New_York").isoformat()
+                          for b in bars}
+            exact_by_bucket = {}
+            for stamp, value in exact.items():
+                if pd.isna(value):
+                    continue
+                if width >= 60:
+                    anchor = stamp.replace(hour=9, minute=30, second=0, microsecond=0)
+                    offset = max(0, int((stamp - anchor).total_seconds() // 60))
+                    bucket = anchor + pd.Timedelta(minutes=(offset // width) * width)
+                else:
+                    bucket = stamp.floor(f"{width}min")
+                key = bucket.isoformat()
+                if key in chart_keys:
+                    exact_by_bucket[key] = {"t": key, "value": float(value)}
+            merged = {pd.Timestamp(p["t"]).tz_convert("America/New_York").isoformat(): p
+                      for p in payload["indicators"]["vwap"]}
+            merged.update(exact_by_bucket)
+            payload["indicators"]["vwap"] = [merged[key] for key in sorted(merged)]
+    return payload
+
+
 def _df_to_bars(df: pd.DataFrame) -> list[dict]:
     """Convert an OHLCV DataFrame to a list of {t, o, h, l, c, v} dicts."""
     if df is None or df.empty:
@@ -423,3 +573,76 @@ def _df_to_bars(df: pd.DataFrame) -> list[dict]:
             "v": float(row.get("volume", 0)),
         })
     return rows
+
+
+def _merge_chart_bars(history: list[dict], minutes: list[dict], timeframe: str) -> list[dict]:
+    """Overlay current-session scanner bars on once-fetched chart history."""
+    if timeframe not in _INTRADAY_MINUTES or not minutes:
+        return history
+    width = _INTRADAY_MINUTES[timeframe]
+    live: dict[str, dict] = {}
+    for raw in minutes:
+        try:
+            stamp = pd.Timestamp(raw["timestamp"])
+            if stamp.tzinfo is None:
+                stamp = stamp.tz_localize("UTC")
+            stamp = stamp.tz_convert("America/New_York")
+            if width >= 60 and stamp.hour >= 9:
+                anchor = stamp.replace(hour=9, minute=30, second=0, microsecond=0)
+                offset = max(0, int((stamp - anchor).total_seconds() // 60))
+                bucket = anchor + pd.Timedelta(minutes=(offset // width) * width)
+            else:
+                bucket = stamp.floor(f"{width}min")
+            key = bucket.isoformat()
+            entry = live.get(key)
+            if entry is None:
+                live[key] = {"t": key, "o": float(raw["open"]), "h": float(raw["high"]),
+                             "l": float(raw["low"]), "c": float(raw["close"]),
+                             "v": float(raw["volume"])}
+            else:
+                entry["h"] = max(entry["h"], float(raw["high"]))
+                entry["l"] = min(entry["l"], float(raw["low"]))
+                entry["c"] = float(raw["close"])
+                entry["v"] += float(raw["volume"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    by_time = {row["t"]: row for row in history}
+    by_time.update(live)
+    return [by_time[t] for t in sorted(by_time)]
+
+
+def _replay_chart_bars(scanner, symbol: str, timeframe: str) -> list[dict]:
+    """Replay charts may see processed bars and pre-session context, never future bars."""
+    live = scanner.chart_bars(symbol)
+    if timeframe in _INTRADAY_MINUTES:
+        return _merge_chart_bars([], live, timeframe)
+    frame = (scanner._spy_daily_history if symbol == "SPY" else
+             scanner._symbol_daily_history.get(symbol, pd.DataFrame())).copy()
+    if live:
+        rth = []
+        for bar in live:
+            stamp = pd.Timestamp(bar["timestamp"])
+            if stamp.tzinfo is None:
+                stamp = stamp.tz_localize("UTC")
+            stamp = stamp.tz_convert("America/New_York")
+            if (9, 30) <= (stamp.hour, stamp.minute) < (16, 0):
+                rth.append(bar)
+        if rth:
+            day = pd.Timestamp(rth[-1]["timestamp"]).tz_convert("America/New_York").date()
+            current = pd.DataFrame({
+                "open": [float(rth[0]["open"])],
+                "high": [max(float(b["high"]) for b in rth)],
+                "low": [min(float(b["low"]) for b in rth)],
+                "close": [float(rth[-1]["close"])],
+                "volume": [sum(float(b["volume"]) for b in rth)],
+            }, index=pd.DatetimeIndex([pd.Timestamp(day, tz="UTC")]))
+            frame = pd.concat([frame, current])
+    if frame.empty:
+        return []
+    frame = frame.sort_index()
+    frame = frame[~frame.index.duplicated(keep="last")]
+    if timeframe == "1week":
+        frame = frame.resample("W-MON", label="left", closed="left").agg({
+            "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
+        }).dropna(subset=["open"])
+    return _df_to_bars(frame)

@@ -232,7 +232,7 @@ export interface CustomSetup {
   /** Optional feed/display direction. Detection still uses `direction`. Useful when
    *  a bearish cross is an exit warning for a long position. */
   alert_direction?: '' | 'long' | 'short' | 'neutral'
-  /** For mode 'atleast': how many of the selected alerts must fire. */
+  /** For mode 'atleast': how many of the selected triggers must match. */
   min_triggers?: number
   /** Shared, named list of dynamic conditions, ANDed with `parameters`. */
   parameter_set?: string
