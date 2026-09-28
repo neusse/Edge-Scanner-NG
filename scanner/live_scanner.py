@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from collections import deque
 from datetime import date
-from threading import Lock
+from threading import Lock, RLock
 from typing import Optional
 
 import pandas as pd
@@ -26,6 +26,7 @@ from scanner.alert_sink import AlertSink
 from scanner.data.interface import DataFeed
 from scanner.conditions import ConditionCtx
 from scanner.market import MarketRegime, classify_market
+from scanner.indicators.classic import calculate
 from scanner.orb_trade import OpeningRangeBook, OrbTradeCross
 from scanner.profiles import BarProfileCache, ProfileResult, profile_stats
 from scanner.recent_activity import RecentActivity, describe_check
@@ -75,10 +76,22 @@ class LiveScanner:
         self._opening_ranges = OpeningRangeBook()
         self._orb_trade = OrbTradeCross()
         self._last_symbol_bar: dict[str, dict] = {}
+        # Last accepted closed minute per stream symbol. Duplicate reconnect
+        # snapshots are ignored; the first bar after a gap is synchronization.
+        self._last_bar_timestamp: dict[str, pd.Timestamp] = {}
+        self._continuity_guard = False
         # The chart API reads from another thread. Keep the exact seeded/live
         # minute bars separately from indicator candles, under a short lock.
         self._chart_lock = Lock()
         self._chart_minutes: dict[str, deque[dict]] = {}
+        self._membership_lock = RLock()
+        self._evaluation_disabled: set[str] = set()
+        self._dynamic_epochs: dict[str, int] = {}
+        self._dynamic_activation_open: set[str] = set()
+        self._dynamic_ranking_ready: set[str] = set()
+        self._dynamic_setup_allowlist: dict[str, frozenset[str]] = {}
+        self._dynamic_readiness: dict[str, dict] = {}
+        self._dynamic_readiness_listener = None
         # Universe profiles. None until attach_profiles(); when absent every
         # alert passes, so this is inert unless deliberately wired up.
         self._profiles = None
@@ -258,6 +271,163 @@ class LiveScanner:
         costs effectively nothing against the per-bar budget.
         """
         self._profiles = engine
+
+    def add_dynamic_symbol(
+        self, symbol: str, daily: pd.DataFrame, bars_5m: pd.DataFrame,
+        session_bars: list[dict], *, evaluation_enabled: bool = False,
+        dynamic_epoch: Optional[int] = None,
+    ) -> None:
+        """Install one warmed session-only symbol without enabling setups.
+
+        Provider membership is already acknowledged before this is called.
+        The short membership lock keeps map iteration and state installation
+        coherent while historical/session synchronization is replayed.
+        """
+        symbol = str(symbol).upper()
+        if daily is None or daily.empty:
+            raise ValueError("daily history unavailable")
+        with self._membership_lock:
+            if dynamic_epoch is not None:
+                self._dynamic_epochs[symbol] = int(dynamic_epoch)
+            if symbol not in self.symbols:
+                self.symbols.append(symbol)
+            self._symbol_daily_history[symbol] = daily.copy()
+            self._bars_5m_history[symbol] = bars_5m.copy() if bars_5m is not None else pd.DataFrame()
+            state = SymbolState.from_history(
+                symbol, daily, self._spy_daily_history,
+                sector_daily=self._sector_daily_history.get(self._sector_map.get(symbol, "")),
+                bars_5m_history=bars_5m,
+            )
+            self._states[symbol] = state
+            series = self._series[symbol] = SymbolSeries(symbol)
+            series.seed_daily(daily)
+            series.seed_intraday(bars_5m)
+            if self._custom_evaluator is not None:
+                for tf, period in self._custom_evaluator.plan.emas:
+                    series.want_ema(tf, period)
+            self._sync_ema_state(state)
+            if evaluation_enabled:
+                self._evaluation_disabled.discard(symbol)
+            else:
+                self._evaluation_disabled.add(symbol)
+            self.seed_session_bars(session_bars)
+            if self._profiles is not None:
+                self._profiles.resolve_symbol(symbol, state, self._fundamentals_for(symbol))
+
+    def set_dynamic_readiness_listener(self, listener) -> None:
+        self._dynamic_readiness_listener = listener
+
+    def activate_dynamic_symbol(self, symbol: str, epoch: int) -> dict:
+        """Open only the setup/ranking capabilities proven ready for an epoch."""
+        symbol = str(symbol).upper()
+        with self._membership_lock:
+            if self._dynamic_epochs.get(symbol) != int(epoch):
+                raise ValueError("stale promotion epoch")
+            self._dynamic_activation_open.add(symbol)
+            readiness = self._assess_dynamic_readiness(symbol)
+            self._apply_dynamic_readiness(symbol, readiness)
+            return readiness
+
+    def begin_dynamic_release(self, symbol: str, epoch: int) -> None:
+        """Fail closed before the provider sees either UNSUBS request."""
+        symbol = str(symbol).upper()
+        with self._membership_lock:
+            if self._dynamic_epochs.get(symbol) != int(epoch):
+                raise ValueError("stale promotion epoch")
+            self._evaluation_disabled.add(symbol)
+            self._dynamic_activation_open.discard(symbol)
+            self._dynamic_ranking_ready.discard(symbol)
+            self._dynamic_setup_allowlist[symbol] = frozenset()
+            self._refresh_opening_rvol_ranks()
+
+    def reconnect_dynamic_symbol(self, symbol: str, old_epoch: int, new_epoch: int) -> bool:
+        """Move an existing dynamic symbol to a disabled, uncertified epoch."""
+        symbol = str(symbol).upper()
+        with self._membership_lock:
+            current = self._dynamic_epochs.get(symbol)
+            if current is None:
+                return False  # promotion disconnected before scanner state was installed
+            if current != int(old_epoch):
+                raise ValueError("stale promotion epoch")
+            self._dynamic_epochs[symbol] = int(new_epoch)
+            self._evaluation_disabled.add(symbol)
+            self._dynamic_activation_open.discard(symbol)
+            self._dynamic_ranking_ready.discard(symbol)
+            self._dynamic_setup_allowlist[symbol] = frozenset()
+            self._dynamic_readiness.pop(symbol, None)
+            for evaluator in (self._system_evaluator, self._de_evaluator, self._custom_evaluator):
+                clear = getattr(evaluator, "clear_symbol", None)
+                if callable(clear):
+                    clear(symbol)
+            self._refresh_opening_rvol_ranks()
+            return True
+
+    def finish_dynamic_release(self, symbol: str, epoch: int) -> None:
+        """Remove active scanner membership while retaining chart/session evidence."""
+        symbol = str(symbol).upper()
+        with self._membership_lock:
+            if self._dynamic_epochs.get(symbol) != int(epoch):
+                raise ValueError("stale promotion epoch")
+            self._states.pop(symbol, None)
+            self._series.pop(symbol, None)
+            self._last_symbol_bar.pop(symbol, None)
+            self._last_bar_timestamp.pop(symbol, None)
+            self._symbol_daily_history.pop(symbol, None)
+            self._bars_5m_history.pop(symbol, None)
+            self._dynamic_readiness.pop(symbol, None)
+            self._dynamic_epochs.pop(symbol, None)
+            self._dynamic_setup_allowlist.pop(symbol, None)
+            self._evaluation_disabled.discard(symbol)
+            if symbol in self.symbols:
+                self.symbols.remove(symbol)
+            for evaluator in (self._system_evaluator, self._de_evaluator, self._custom_evaluator):
+                clear = getattr(evaluator, "clear_symbol", None)
+                if callable(clear):
+                    clear(symbol)
+
+    def _assess_dynamic_readiness(self, symbol: str) -> dict:
+        from scanner.dynamic_readiness import assess
+        return assess(self, symbol)
+
+    def _apply_dynamic_readiness(self, symbol: str, readiness: dict) -> None:
+        previous = self._dynamic_setup_allowlist.get(symbol, frozenset())
+        ranking_was_ready = symbol in self._dynamic_ranking_ready
+        ready = frozenset(readiness.get("ready_setup_ids") or ())
+        self._dynamic_setup_allowlist[symbol] = ready
+        self._dynamic_readiness[symbol] = readiness
+        if readiness.get("ready") and ready:
+            self._evaluation_disabled.discard(symbol)
+        else:
+            self._evaluation_disabled.add(symbol)
+        if readiness.get("ready"):
+            self._dynamic_ranking_ready.add(symbol)
+        else:
+            self._dynamic_ranking_ready.discard(symbol)
+        if ready != previous or ranking_was_ready != (symbol in self._dynamic_ranking_ready):
+            self._refresh_opening_rvol_ranks()
+        listener = self._dynamic_readiness_listener
+        if callable(listener):
+            listener(symbol, self._dynamic_epochs.get(symbol), readiness)
+
+    def _refresh_dynamic_readiness(self, symbol: str) -> dict:
+        readiness = self._assess_dynamic_readiness(symbol)
+        self._apply_dynamic_readiness(symbol, readiness)
+        return readiness
+
+    def dynamic_readiness(self, symbol: str) -> Optional[dict]:
+        return self._dynamic_readiness.get(str(symbol).upper())
+
+    def dynamic_setup_available(self, symbol: str, setup_id: str) -> bool:
+        symbol = str(symbol).upper()
+        allowed = self._dynamic_setup_allowlist.get(symbol)
+        return allowed is None or setup_id in allowed
+
+    def dynamic_ranking_enabled(self, symbol: str) -> bool:
+        symbol = str(symbol).upper()
+        return symbol not in self._dynamic_epochs or symbol in self._dynamic_ranking_ready
+
+    def dynamic_setup_enabled(self, symbol: str) -> bool:
+        return str(symbol).upper() not in self._evaluation_disabled
 
     def _passes_profile(self, alert: dict, state: SymbolState, bar: dict,
                         session: str, cache, source: str, evaluator=None) -> bool:
@@ -440,7 +610,8 @@ class LiveScanner:
         before_opening_rvol = state.opening_rvol_m5
         state.on_bar(bar, spy_bar, sector_bar)
         if before_opening_rvol is None and state.opening_rvol_m5 is not None:
-            self._refresh_opening_rvol_ranks()
+            if self.dynamic_ranking_enabled(state.symbol):
+                self._refresh_opening_rvol_ranks()
         session = self._advance_series(state, bar)
         self._opening_ranges.on_bar(bar)
         self._last_symbol_bar[state.symbol] = dict(bar)
@@ -452,7 +623,196 @@ class LiveScanner:
                 session,
                 spy_mom_15m=(self._spy_state.mom_15m_pct if self._spy_state else None),
             )
+        self._remember_bar_timestamp(bar)
         return True
+
+    def _prepare_session_bars(self, bars: list[dict]) -> list[dict]:
+        if not bars:
+            return []
+        normalized: list[dict] = []
+        seen: set[pd.Timestamp] = set()
+        for source in bars:
+            bar = dict(source)
+            stamp = pd.Timestamp(bar["timestamp"])
+            if stamp.tzinfo is None:
+                stamp = stamp.tz_localize("UTC")
+            else:
+                stamp = stamp.tz_convert("UTC")
+            if stamp in seen:
+                raise ValueError("session seed bars require unique timestamps")
+            seen.add(stamp)
+            bar["timestamp"] = stamp
+            normalized.append(bar)
+        normalized.sort(key=lambda item: item["timestamp"])
+
+        rth = []
+        for bar in normalized:
+            et = bar["timestamp"].tz_convert("America/New_York")
+            minute = et.hour * 60 + et.minute
+            if 9 * 60 + 30 <= minute < 16 * 60:
+                rth.append(bar)
+        if rth:
+            frame = pd.DataFrame(rth).set_index("timestamp")
+            values = calculate(frame, "vwap")["value"]
+            for bar, value in zip(rth, values, strict=True):
+                bar["_seed_vwap"] = value
+        self._annotate_seed_emas(normalized)
+        return normalized
+
+    def _annotate_seed_emas(self, bars: list[dict]) -> None:
+        """Batch Classic EMA calculations and attach values to close events.
+
+        ``SymbolSeries.on_bar`` still owns candle construction.  This helper
+        mirrors only its clock buckets to identify which incoming minute closes
+        a prior candle, then computes each requested EMA once over the complete
+        close sequence.  The normal replay path consumes those library values.
+        """
+        if not bars:
+            return
+        symbol = str(bars[0].get("symbol") or "")
+        series = self._series.get(symbol)
+        if series is None or not series.emas:
+            return
+
+        requirements: dict[int, list[tuple[int, object]]] = {}
+        for (tf, period), tracker in series.emas.items():
+            requirements.setdefault(tf, []).append((period, tracker))
+
+        from scanner.trigger_catalog import _session_of, candle_key
+
+        for tf, trackers in requirements.items():
+            partial = dict(series.partial[tf]) if series.partial[tf] is not None else None
+            completed: list[tuple[int, float]] = []
+            active_day = series.session_date
+            for index, bar in enumerate(bars):
+                stamp = pd.Timestamp(bar["timestamp"])
+                et = stamp.tz_convert("America/New_York")
+                day = et.strftime("%Y-%m-%d")
+                minute = et.hour * 60 + et.minute
+                session = _session_of(minute)
+                if active_day is not None and day != active_day:
+                    partial = None
+                active_day = day
+                key = (day,) + candle_key(minute, tf)
+                if partial is None or partial["key"] != key:
+                    if partial is not None:
+                        anchor = 4 * 60 if partial["session"] == "pre" else 9 * 60 + 30
+                        expected = anchor + partial["key"][2] * tf
+                        covered = (
+                            partial["continuous"] and partial["count"] == tf
+                            and partial["et_min"] == expected
+                            and partial["last_min"] == expected + tf - 1
+                        )
+                        if covered and partial["session"] == "rth":
+                            completed.append((index, float(partial["close"])))
+                    partial = {
+                        "key": key, "close": float(bar["close"]), "session": session,
+                        "et_min": minute, "last_min": minute, "count": 1,
+                        "continuous": True,
+                    }
+                else:
+                    partial["continuous"] = partial["continuous"] and minute == partial["last_min"] + 1
+                    partial["last_min"] = minute
+                    partial["count"] += 1
+                    partial["close"] = float(bar["close"])
+
+            if not completed:
+                continue
+            new_closes = [close for _, close in completed]
+            for period, tracker in trackers:
+                prior = list(tracker._closes)
+                values = calculate(
+                    pd.DataFrame({"close": pd.Series(prior + new_closes, dtype=float)}),
+                    "ema", period,
+                )["value"].iloc[len(prior):]
+                for (bar_index, _), value in zip(completed, values, strict=True):
+                    bars[bar_index].setdefault("_seed_emas", {})[(tf, period)] = value
+                    bars[bar_index]["_seed_series_emas"] = True
+
+    def seed_session_bars(self, bars: list[dict],
+                          spy_bars: Optional[dict[pd.Timestamp, dict]] = None,
+                          sector_bars: Optional[dict[pd.Timestamp, dict]] = None) -> int:
+        """Prime one symbol from a session snapshot in chronological order.
+
+        Pandas-TA remains the VWAP calculator, but it runs once for the complete
+        RTH snapshot instead of once for every growing prefix. Each precomputed
+        value then follows the same state/series priming path as a single bar.
+        """
+        normalized = self._prepare_session_bars(bars)
+
+        spy_bars = spy_bars or {}
+        sector_bars = sector_bars or {}
+        seeded = 0
+        for bar in normalized:
+            if self.seed_session_bar(
+                bar, spy_bars.get(bar["timestamp"]), sector_bars.get(bar["timestamp"])
+            ):
+                seeded += 1
+        return seeded
+
+    def seed_spy_session_bars(self, bars: list[dict]) -> int:
+        """Prime the SPY reference state with one batched Classic VWAP pass."""
+        seeded = 0
+        for bar in self._prepare_session_bars(bars):
+            if self.prime_stream_bar(bar):
+                seeded += 1
+        return seeded
+
+    def prime_stream_bar(self, bar: dict) -> bool:
+        """Apply a buffered stream bar as synchronization, without alerts."""
+        if not self._roll_session_if_new_day(bar):
+            return False
+        symbol = str(bar.get("symbol") or "")
+        if symbol == "SPY":
+            if self._spy_state is None:
+                return False
+            self._spy_state.on_bar(bar)
+            self._latest_spy_bar = dict(bar)
+            self._record_chart_bar(bar)
+            self._regime = classify_market(bar["close"], self._spy_state.vwap)
+            self._remember_bar_timestamp(bar)
+            return True
+
+        if symbol in self._sector_symbols:
+            self._latest_sector_bars[symbol] = dict(bar)
+            self._update_sector_session(symbol, bar)
+
+        state = self._states.get(symbol)
+        if state is None:
+            if symbol in self._sector_symbols:
+                self._remember_bar_timestamp(bar)
+            return symbol in self._sector_symbols
+        sector = self._latest_sector_bars.get(self._sector_map.get(symbol, ""))
+        return self.seed_session_bar(bar, self._latest_spy_bar, sector)
+
+    @staticmethod
+    def _bar_timestamp(bar: dict) -> pd.Timestamp:
+        stamp = pd.Timestamp(bar["timestamp"])
+        return stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+
+    def _remember_bar_timestamp(self, bar: dict) -> None:
+        symbol = str(bar.get("symbol") or "").upper()
+        if symbol:
+            self._last_bar_timestamp[symbol] = self._bar_timestamp(bar)
+
+    def _live_bar_sequence(self, bar: dict) -> str:
+        """Return ``next``, ``gap`` or ``duplicate`` for one stream symbol."""
+        symbol = str(bar.get("symbol") or "").upper()
+        stamp = self._bar_timestamp(bar)
+        previous = self._last_bar_timestamp.get(symbol)
+        if previous is None:
+            return "gap"
+        if stamp <= previous:
+            return "duplicate"
+        return "next" if stamp - previous == pd.Timedelta(minutes=1) else "gap"
+
+    def guard_live_continuity(self) -> None:
+        """Enable fail-closed duplicate/gap handling for a real live stream.
+
+        Replay and direct unit consumers keep their deterministic historical
+        behavior; the live startup orchestrator opts in before opening Schwab.
+        """
+        self._continuity_guard = True
 
     def _record_chart_bar(self, bar: dict) -> None:
         # Some narrow diagnostic tests construct a scanner with __new__ and
@@ -479,14 +839,18 @@ class LiveScanner:
         values = {
             symbol: value
             for symbol, state in self._states.items()
-            if (value := state.opening_rvol_m5) is not None
+            if self.dynamic_ranking_enabled(symbol)
+            and (value := state.opening_rvol_m5) is not None
         }
         population = len(values)
-        universe_size = len(self._states)
+        universe_size = sum(self.dynamic_ranking_enabled(symbol) for symbol in self._states)
         rank_for_value: dict[float, int] = {}
         for rank, value in enumerate(sorted(values.values(), reverse=True), start=1):
             rank_for_value.setdefault(value, rank)
         for symbol, state in self._states.items():
+            if not self.dynamic_ranking_enabled(symbol):
+                state.set_opening_rvol_rank(None, population, universe_size)
+                continue
             value = values.get(symbol)
             rank = float(rank_for_value[value]) if value is not None else None
             state.set_opening_rvol_rank(rank, population, universe_size)
@@ -683,6 +1047,17 @@ class LiveScanner:
             bar: dict with keys symbol, timestamp, open, high, low, close, volume
         """
         symbol: str = bar.get("symbol", "")
+        if getattr(self, "_continuity_guard", False):
+            sequence = self._live_bar_sequence(bar)
+            if sequence == "duplicate":
+                log.debug("Ignoring duplicate/stale stream bar %s %s", symbol, bar.get("timestamp"))
+                return
+            if sequence == "gap":
+                # Initial subscription/reconnect snapshots are synchronization.
+                # prime_stream_bar updates all detector baselines but never emits.
+                self.prime_stream_bar(bar)
+                return
+            self._remember_bar_timestamp(bar)
         if not self._roll_session_if_new_day(bar):
             return
 
@@ -720,7 +1095,8 @@ class LiveScanner:
         before_opening_rvol = state.opening_rvol_m5
         state.on_bar(bar, self._latest_spy_bar, sector_bar)
         if before_opening_rvol is None and state.opening_rvol_m5 is not None:
-            self._refresh_opening_rvol_ranks()
+            if self.dynamic_ranking_enabled(state.symbol):
+                self._refresh_opening_rvol_ranks()
         if _t:
             _t1 = perf_counter_ns(); bar_timer.record("state", _t1 - _t0); _t0 = _t1
 
@@ -734,6 +1110,11 @@ class LiveScanner:
         self._record_chart_bar(bar)
         if _t:
             _t1 = perf_counter_ns(); bar_timer.record("series", _t1 - _t0); _t0 = _t1
+
+        if symbol in self._dynamic_activation_open:
+            self._refresh_dynamic_readiness(symbol)
+        if symbol in self._evaluation_disabled:
+            return
 
         # What the existing evaluators fired on this bar, for custom setups that
         # reuse them as triggers ("setup:<code>").
@@ -752,6 +1133,8 @@ class LiveScanner:
                 spy_chg = self._spy_state.rth_chg_pct if self._spy_state is not None else None
                 spy_mom15 = self._spy_state.mom_15m_pct if self._spy_state is not None else None
                 for alert in self._system_evaluator.on_bar(state, bar, spy_chg, spy_mom15):
+                    if not self.dynamic_setup_available(symbol, alert["setup"]):
+                        continue
                     ext_fired.add(f"setup:{alert['setup']}")
                     if not self._passes_profile(alert, state, bar, session, pcache, "system", self._system_evaluator):
                         continue
@@ -773,6 +1156,8 @@ class LiveScanner:
         if self._de_evaluator is not None and self._system_sink is not None:
             try:
                 for alert in self._de_evaluator.on_bar(state, bar):
+                    if not self.dynamic_setup_available(symbol, alert["setup"]):
+                        continue
                     ext_fired.add(f"setup:{alert['setup']}")
                     if not self._passes_profile(alert, state, bar, session, pcache, "system", self._de_evaluator):
                         continue
@@ -793,8 +1178,10 @@ class LiveScanner:
         if self._custom_evaluator is not None and self._custom_sink is not None:
             try:
                 spy_mom15 = self._spy_state.mom_15m_pct if self._spy_state is not None else None
+                allowed = self._dynamic_setup_allowlist.get(symbol)
                 for alert in self._custom_evaluator.on_bar(state, bar, ext_fired, spy_mom15,
-                                                           session=session, defer_commit=True):
+                                                           session=session, defer_commit=True,
+                                                           allowed_setups=allowed):
                     if not self._passes_profile(alert, state, bar, session, pcache, "custom"):
                         continue
                     if self._record_push(self._custom_sink.push(alert), alert, "custom", alert["setup"]):
@@ -817,6 +1204,8 @@ class LiveScanner:
         if evaluator is None or self._custom_sink is None or not evaluator.plan.trade_keys:
             return
         symbol = str(event.get("symbol") or "").upper()
+        if symbol in self._evaluation_disabled:
+            return
         state = self._states.get(symbol)
         context_bar = self._last_symbol_bar.get(symbol)
         if state is None or context_bar is None:
@@ -832,6 +1221,8 @@ class LiveScanner:
             if evidence is None:
                 continue
             for alert in evaluator.on_trade_cross(state, context_bar, interval, evidence):
+                if not self.dynamic_setup_available(symbol, alert["setup"]):
+                    continue
                 # The completed bar is screening context. The alert's market
                 # timestamp and price are the raw trade observation instead.
                 if not self._passes_profile(alert, state, context_bar, "rth",
@@ -886,6 +1277,12 @@ class LiveScanner:
 
     # ── Connection ────────────────────────────────────────────────────────────
 
+    def subscription_symbols(self) -> list[str]:
+        """Symbols for the scanner's single provider stream, in priority order."""
+        symbols = ["SPY"] + [sym for sym in self.ranked_symbols() if sym != "SPY"]
+        symbols += [sym for sym in getattr(self, "_sector_symbols", ()) if sym not in symbols]
+        return symbols
+
     def connect(self) -> None:
         """Subscribe to 1-min bars and block until the stream ends.
 
@@ -895,8 +1292,7 @@ class LiveScanner:
         """
         if not self._states:
             log.warning("connect() called before warmup — no symbols loaded")
-        all_symbols = ["SPY"] + [sym for sym in self.ranked_symbols() if sym != "SPY"]
-        all_symbols += [sym for sym in getattr(self, "_sector_symbols", ()) if sym not in all_symbols]
+        all_symbols = self.subscription_symbols()
         log.info("Connecting to live feed for %d symbols", len(all_symbols))
         self.configure_trade_callback()
         self.feed.subscribe_minute_bars(all_symbols, self._on_bar)

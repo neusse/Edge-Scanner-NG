@@ -309,10 +309,19 @@ def _fake_feed(monkeypatch, sent, quotes=None):
 
     class FakeStream:
         receiver = None
-        def __init__(self, client): pass
+        def __init__(self, client): self.active = True
         def start(self, receiver, daemon=True): FakeStream.receiver = receiver
-        def chart_equity(self, keys, fields): return ("CHART_EQUITY", list(keys))
-        def level_one_equities(self, keys, fields, command="ADD"): return ("LEVELONE_EQUITIES", list(keys))
+        def chart_equity(self, keys, fields, command=None):
+            if keys == ["NEW"] and command in {"ADD", "UNSUBS"}:
+                return {"service": "CHART_EQUITY", "requestid": 900 if command == "ADD" else 902,
+                        "keys": list(keys)}
+            return ("CHART_EQUITY", list(keys))
+        def level_one_equities(self, keys, fields, command=None):
+            if keys == ["NEW"] and command in {"ADD", "UNSUBS"}:
+                return {"service": "LEVELONE_EQUITIES", "requestid": 901 if command == "ADD" else 903,
+                        "keys": list(keys)}
+            return ("LEVELONE_EQUITIES", list(keys))
+        def screener_equity(self, keys, fields, command="ADD"): return ("SCREENER_EQUITY", list(keys))
         def send(self, req): sent.append(req)
         def stop(self): pass
 
@@ -328,11 +337,32 @@ def _fake_feed(monkeypatch, sent, quotes=None):
     feed.streamed_symbols, feed.unstreamed_symbols = [], []
     feed.quote_streamed_symbols, feed.polled_symbols, feed.quote_bars = [], [], None
     from scanner.quote_state import QuoteBook
+    from scanner.schwab_screener import SchwabScreenerBook
     feed.quote_book = QuoteBook()
+    feed.screener_book = SchwabScreenerBook()
     feed.quote_covered_symbols = []
     feed._quote_lock = threading.RLock()
+    feed._screener_lock = threading.RLock()
+    feed._screener_keys = []
     feed._quote_base_symbols = set()
     feed._quote_watched_symbols = set()
+    feed._dynamic_lock = threading.RLock()
+    feed._dynamic_memberships = {}
+    feed._dynamic_requests = {}
+    feed._dynamic_controller = None
+    feed._dynamic_connection_epoch = 0
+    feed._dynamic_connected = True
+    feed._dynamic_ever_connected = True
+    feed._dynamic_health = {
+        "CHART_EQUITY": {"status": "live", "error": None},
+        "LEVELONE_EQUITIES": {"status": "live", "error": None},
+    }
+    feed._base_requests = {}
+    feed._base_acknowledged = {"CHART_EQUITY": set(), "LEVELONE_EQUITIES": set()}
+    feed._base_rejected = {"CHART_EQUITY": set(), "LEVELONE_EQUITIES": set()}
+    feed._base_tracking = {"CHART_EQUITY": False, "LEVELONE_EQUITIES": False}
+    feed._dynamic_caps = {"CHART_EQUITY": 300, "LEVELONE_EQUITIES": 3000}
+    feed._dynamic_chart_headroom = 5
     feed._stop_evt.set()                                   # return right after subscribing
     monkeypatch.setattr(feed._stop_evt, "clear", lambda: None)
     return feed, FakeStream
@@ -371,8 +401,23 @@ def test_small_universe_uses_real_bars_only(monkeypatch):
     sent = []
     feed, _ = _fake_feed(monkeypatch, sent)
     feed.subscribe_minute_bars([f"S{i}" for i in range(120)], lambda bar: None)
-    assert {svc for svc, _ in sent} == {"CHART_EQUITY", "LEVELONE_EQUITIES"}
+    assert {svc for svc, _ in sent} == {"CHART_EQUITY", "LEVELONE_EQUITIES", "SCREENER_EQUITY"}
     assert feed.quote_streamed_symbols == [] and feed.polled_symbols == []
+
+
+def test_screener_keys_change_on_same_stream_without_touching_market_data(monkeypatch):
+    sent = []
+    feed, _ = _fake_feed(monkeypatch, sent)
+    feed.subscribe_minute_bars(["AAA"], lambda bar: None)
+    sent.clear()
+    feed.watch_screeners(["NASDAQ_TRADES_5", "EQUITY_ALL_VOLUME_5"])
+    assert sent[0] == ("SCREENER_EQUITY", ["NASDAQ_TRADES_5"])
+    assert {keys[0] for _, keys in sent[1:]} == {
+        "EQUITY_ALL_AVERAGE_PERCENT_VOLUME_5", "EQUITY_ALL_PERCENT_CHANGE_UP_1",
+        "EQUITY_ALL_PERCENT_CHANGE_UP_10", "EQUITY_ALL_PERCENT_CHANGE_UP_5",
+        "EQUITY_ALL_PERCENT_CHANGE_UP_60", "EQUITY_ALL_TRADES_5",
+    }
+    assert all(service == "SCREENER_EQUITY" for service, _ in sent)
 
 
 def test_streamed_quotes_become_bars_through_the_same_callback(monkeypatch):
@@ -433,6 +478,185 @@ def test_external_held_symbol_uses_existing_stream_and_budget(monkeypatch):
     assert feed.quote_book.get("HELD")["coverage"] == "subscribing"
     assert feed.watch_quotes([])["watched"] == []
     assert feed.quote_book.get("HELD")["coverage"] == "not_watched"
+
+
+def test_dynamic_membership_uses_existing_stream_and_waits_for_both_acknowledgements(monkeypatch):
+    sent = []
+    feed, stream_cls = _fake_feed(monkeypatch, sent)
+    feed.subscribe_minute_bars(["AAA"], lambda bar: None)
+    original_stream = feed._stream
+
+    class Controller:
+        changes = []
+        def on_membership(self, symbol, snapshot): self.changes.append((symbol, snapshot))
+        def on_bar(self, bar): return False
+
+    controller = Controller()
+    feed.set_dynamic_controller(controller)
+    preview = feed.dynamic_capacity()
+    assert {key: preview["chart"][key] for key in ("used", "cap", "headroom", "available")} == {
+        "used": 1, "cap": 300, "headroom": 5, "available": 294,
+    }
+    assert preview["chart"]["status"] == "live" and preview["chart"]["deficit"] == 0
+    feed.request_dynamic_membership("NEW")
+    assert feed._stream is original_stream
+    assert sent[-2:] == [
+        {"service": "CHART_EQUITY", "requestid": 900, "keys": ["NEW"]},
+        {"service": "LEVELONE_EQUITIES", "requestid": 901, "keys": ["NEW"]},
+    ]
+    assert feed.dynamic_membership("NEW")["chart"] == "requested"
+
+    stream_cls.receiver({"response": [
+        {"service": "CHART_EQUITY", "requestid": 900,
+         "content": {"code": 0, "msg": "ADD command succeeded"}},
+    ]})
+    assert feed.dynamic_membership("NEW")["chart"] == "acknowledged"
+    assert feed.dynamic_membership("NEW")["level_one"] == "requested"
+    stream_cls.receiver({"response": [
+        {"service": "LEVELONE_EQUITIES", "requestid": 901,
+         "content": {"code": 0, "msg": "ADD command succeeded"}},
+    ]})
+    assert feed.dynamic_membership("NEW")["level_one"] == "acknowledged"
+    assert "NEW" in feed.streamed_symbols and "NEW" in feed.quote_covered_symbols
+    assert len(controller.changes) == 2
+
+
+def test_dynamic_membership_refuses_chart_or_level_one_over_budget(monkeypatch):
+    sent = []
+    feed, _ = _fake_feed(monkeypatch, sent)
+    feed.subscribe_minute_bars([f"S{i}" for i in range(295)], lambda bar: None)
+    assert feed.dynamic_capacity()["chart"]["available"] == 0
+    with pytest.raises(ValueError, match="Chart Equity capacity"):
+        feed.request_dynamic_membership("NEW")
+    feed.streamed_symbols = ["AAA"]
+    feed.quote_covered_symbols = [f"Q{i}" for i in range(3000)]
+    with pytest.raises(ValueError, match="Level One capacity"):
+        feed.request_dynamic_membership("NEW")
+
+
+def test_dynamic_release_tracks_service_acknowledgements_without_touching_other_symbols(monkeypatch):
+    sent = []
+    feed, stream_cls = _fake_feed(monkeypatch, sent)
+    feed.subscribe_minute_bars(["AAA"], lambda bar: None)
+    feed.request_dynamic_membership("NEW")
+    stream_cls.receiver({"response": [
+        {"service": "CHART_EQUITY", "requestid": 900, "content": {"code": 0}},
+        {"service": "LEVELONE_EQUITIES", "requestid": 901, "content": {"code": 0}},
+    ]})
+    feed.request_dynamic_release("NEW")
+    assert sent[-2:] == [
+        {"service": "CHART_EQUITY", "requestid": 902, "keys": ["NEW"]},
+        {"service": "LEVELONE_EQUITIES", "requestid": 903, "keys": ["NEW"]},
+    ]
+    stream_cls.receiver({"response": [
+        {"service": "CHART_EQUITY", "requestid": 902, "content": {"code": 0}},
+    ]})
+    assert feed.dynamic_membership("NEW")["chart"] == "removed"
+    assert feed.dynamic_membership("NEW")["level_one"] == "removal_requested"
+    assert "AAA" in feed.streamed_symbols and "AAA" in feed.quote_covered_symbols
+    stream_cls.receiver({"response": [
+        {"service": "LEVELONE_EQUITIES", "requestid": 903, "content": {"code": 7, "msg": "not removed"}},
+    ]})
+    assert feed.dynamic_membership("NEW")["level_one"] == "removal_rejected"
+    assert "AAA" in feed.streamed_symbols and "AAA" in feed.quote_covered_symbols
+
+
+def test_dynamic_code19_rejects_exact_service_and_updates_reported_capacity(monkeypatch):
+    sent = []
+    feed, stream_cls = _fake_feed(monkeypatch, sent)
+    feed.subscribe_minute_bars(["AAA"], lambda bar: None)
+
+    class Controller:
+        changes = []
+        def on_membership(self, symbol, snapshot): self.changes.append((symbol, snapshot))
+        def on_bar(self, bar): return False
+
+    controller = Controller()
+    feed.set_dynamic_controller(controller)
+    feed.request_dynamic_membership("NEW")
+    stream_cls.receiver({"response": [{"service": "CHART_EQUITY", "requestid": 900,
+        "content": {"code": 19, "msg": "limit (CHART_EQUITY=1, DISCARDED=1)"}}]})
+    membership = feed.dynamic_membership("NEW")
+    assert membership["chart"] == "rejected" and membership["level_one"] == "requested"
+    assert membership["capacity"]["chart"]["cap"] == 1
+    assert membership["capacity"]["chart"]["status"] == "degraded"
+    assert controller.changes[-1][1]["chart"] == "rejected"
+
+
+def test_partial_initial_chunk_records_exact_acknowledged_and_discarded_subset(monkeypatch):
+    sent = []
+    feed, _ = _fake_feed(monkeypatch, sent)
+    feed.streamed_symbols = ["A", "B", "C", "D"]
+    feed._base_tracking["CHART_EQUITY"] = True
+    feed._base_requests["44"] = ("CHART_EQUITY", ["A", "B", "C", "D"])
+    partial = feed._ingest_base_responses({"response": [{
+        "service": "CHART_EQUITY", "requestid": 44,
+        "content": {"code": 19, "msg": "limit (CHART_EQUITY=2, DISCARDED=2)"},
+    }]})
+    assert partial == {"CHART_EQUITY": ["C", "D"]}
+    capacity = feed.dynamic_capacity()["chart"]
+    assert capacity["acknowledged"] == 2 and capacity["rejected"] == 2
+    assert feed._base_acknowledged["CHART_EQUITY"] == {"A", "B"}
+
+
+def test_dynamic_reconnect_restores_desired_services_and_keeps_stalls_independent(monkeypatch):
+    sent = []
+    feed, stream_cls = _fake_feed(monkeypatch, sent)
+    feed.subscribe_minute_bars(["AAA"], lambda bar: None)
+
+    class Controller:
+        changes = []
+        connections = []
+        def on_membership(self, symbol, snapshot): self.changes.append((symbol, snapshot))
+        def on_connection(self, active, epoch): self.connections.append((active, epoch))
+        def on_bar(self, bar): return False
+        def protected_symbols(self): return set()
+
+    controller = Controller()
+    feed.set_dynamic_controller(controller)
+    feed.request_dynamic_membership("NEW")
+    stream_cls.receiver({"response": [
+        {"service": "CHART_EQUITY", "requestid": 900, "content": {"code": 0}},
+        {"service": "LEVELONE_EQUITIES", "requestid": 901, "content": {"code": 0}},
+    ]})
+    sent.clear()
+    feed._dynamic_connection_changed(False)
+    assert controller.connections == [(False, 1)]
+    assert feed.dynamic_membership("NEW")["chart"] == "reconnecting"
+    feed._dynamic_connection_changed(True)
+    restored_dynamic = [item for item in sent if isinstance(item, dict)]
+    assert [item["service"] for item in restored_dynamic] == ["CHART_EQUITY", "LEVELONE_EQUITIES"]
+    assert ("CHART_EQUITY", ["AAA"]) in sent
+    assert any(isinstance(item, tuple) and item[0] == "SCREENER_EQUITY" for item in sent)
+    assert feed.dynamic_capacity()["connection_epoch"] == 1
+    assert feed.dynamic_capacity()["chart"]["status"] == "restoring"
+    stream_cls.receiver({"response": [
+        {"service": "CHART_EQUITY", "requestid": 900, "content": {"code": 0}},
+    ]})
+    membership = feed.dynamic_membership("NEW")
+    assert membership["chart"] == "acknowledged" and membership["level_one"] == "requested"
+    assert membership["capacity"]["chart"]["status"] == "live"
+    assert membership["capacity"]["level_one"]["status"] == "restoring"
+
+
+def test_lower_limit_preserves_protected_desired_membership_and_exposes_deficit(monkeypatch):
+    sent = []
+    feed, stream_cls = _fake_feed(monkeypatch, sent)
+    feed.subscribe_minute_bars(["AAA", "BBB", "NEW"], lambda bar: None)
+
+    class Controller:
+        def on_membership(self, symbol, snapshot): pass
+        def on_bar(self, bar): return False
+        def protected_symbols(self): return {"NEW"}
+
+    feed.set_dynamic_controller(Controller())
+    stream_cls.receiver({"response": [{"service": "CHART_EQUITY", "requestid": 777,
+        "content": {"code": 19, "msg": "limit (CHART_EQUITY=2, DISCARDED=1)"}}]})
+    assert feed.streamed_symbols == ["AAA", "BBB", "NEW"]
+    capacity = feed.dynamic_capacity()
+    assert capacity["chart"]["cap"] == 2 and capacity["chart"]["deficit"] > 0
+    assert capacity["chart"]["status"] == "degraded"
+    assert capacity["admissions_blocked"] is True
 
 
 def test_short_history_is_not_downloaded_again_once_that_span_was_asked_for(tmp_path):

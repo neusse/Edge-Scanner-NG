@@ -284,7 +284,7 @@ def test_five_min_slot_floor():
 
 
 def test_aggregate_into_slot_completes_on_new_slot():
-    """A bar in a new slot finalises the previous partial and starts a new one."""
+    """A new slot finalises the previous bar only after all five source minutes."""
     completed = deque()
     b1 = _bar("2024-01-02 09:30", price=100.0, volume=1_000.0)
     b2 = _bar("2024-01-02 09:31", price=101.0, volume=2_000.0)
@@ -294,6 +294,9 @@ def test_aggregate_into_slot_completes_on_new_slot():
     partial = _aggregate_into_slot(None, completed, b1, slot1)
     partial = _aggregate_into_slot(partial, completed, b2, slot1)
     assert len(completed) == 0  # same slot — not completed yet
+    for minute in (32, 33, 34):
+        extra = _bar(f"2024-01-02 09:{minute}", price=101.0, volume=0.0)
+        partial = _aggregate_into_slot(partial, completed, extra, slot1)
 
     slot2 = _five_min_slot(b3["timestamp"])
     partial = _aggregate_into_slot(partial, completed, b3, slot2)
@@ -303,6 +306,17 @@ def test_aggregate_into_slot_completes_on_new_slot():
     assert done["open"]   == pytest.approx(100.0)   # open from first bar
     assert done["close"]  == pytest.approx(101.0)   # close from last bar
     assert done["volume"] == pytest.approx(3_000.0) # sum
+
+
+def test_aggregate_into_slot_drops_restart_gap_fragment():
+    completed = deque()
+    partial = None
+    for minute in (40, 41):
+        bar = _bar(f"2024-01-02 09:{minute}", price=101.0)
+        partial = _aggregate_into_slot(partial, completed, bar, _five_min_slot(bar["timestamp"]))
+    resumed = _bar("2024-01-02 09:48", price=99.0)
+    _aggregate_into_slot(partial, completed, resumed, _five_min_slot(resumed["timestamp"]))
+    assert not completed
 
 
 # ── reset_intraday ────────────────────────────────────────────────────────────

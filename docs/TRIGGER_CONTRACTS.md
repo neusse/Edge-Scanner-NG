@@ -24,6 +24,8 @@ sink can further suppress publication; those do not change the trigger's event c
 | `near_last_low` | approach_edge | Pre, RTH | Close approaches swing low inside one timeframe ATR; current low remains at/above level. |
 | `reject_last_high` | completed_candle | RTH | Completed candle touches/pokes prior swing high, closes red back below it. |
 | `reject_last_low` | completed_candle | RTH | Completed candle touches/pokes prior swing low, closes green back above it. |
+| `failed_swing_high` | ordered_break_return | RTH | Completed candle closes at least the configured distance above today's prior swing high; freeze that level, then fire short only when a later completed candle closes below it within the wait window. One event per break; state resets each session. |
+| `failed_swing_low` | ordered_break_return | RTH | Completed candle closes at least the configured distance below today's prior swing low; freeze that level, then fire long only when a later completed candle closes above it within the wait window. One event per break; state resets each session. |
 | `orb_breakout` | once_per_day | RTH | After today's opening candle completes, close crosses its high once. `eventSemantics: bar-close-cross`; not a fresh trade. |
 | `orb_trade_cross` | once_per_day | RTH | First observed fresh Schwab trade crosses strictly above the completed 5- or 15-minute opening high, after a same-stream below-side observation. `eventSemantics: trade-cross`; [full contract](ORB_TRADE_CROSS.md). |
 | `orb_breakdown` | once_per_day | RTH | After today's opening candle completes, close crosses its low once. |

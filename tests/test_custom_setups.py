@@ -70,6 +70,14 @@ def test_catalog_is_well_formed():
     assert sorted(t.id for t in CATALOG if t.source == "system") == sorted(f"setup:{c}" for c in plugins.SYSTEM_CODES)
 
 
+def test_failed_swing_break_uses_ordered_triggers_in_fresh_defaults(tmp_path):
+    store = CustomSetupStore(tmp_path / "custom", defaults=_DEFAULTS_FILE)
+    setup = store.get("cs_candidate_failed_break")
+    assert setup is not None
+    assert setup["enabled"] is True
+    assert {t["id"] for t in setup["triggers"]} == {"failed_swing_high", "failed_swing_low"}
+
+
 def test_candle_key_anchors():
     assert candle_key(9 * 60 + 30, 5) == ("rth", 0)
     assert candle_key(9 * 60 + 34, 5) == ("rth", 0)
@@ -175,9 +183,10 @@ def test_bearish_cross_can_report_a_long_position_exit(tmp_path):
 def test_five_min_ema_uses_completed_regular_session_candles_only():
     series = SymbolSeries("AAA")
     for i in range(10):
-        series.on_bar({"open": 100.0, "high": 100.0, "low": 100.0,
-                       "close": 100.0, "volume": 1.0},
-                      570 + i * 5, "2024-01-02", None)
+        for minute in range(5):
+            series.on_bar({"open": 100.0, "high": 100.0, "low": 100.0,
+                           "close": 100.0, "volume": 1.0},
+                          570 + i * 5 + minute, "2024-01-02", None)
     before = series.ema(5, 9).value
     assert before == pytest.approx(100.0)
     series.on_bar({"open": 200.0, "high": 200.0, "low": 200.0,
@@ -1388,7 +1397,8 @@ def test_back_to_ema_uses_ema_at_each_historical_candle(closes, away_extremes, s
                "close": close, "volume": 1}
         if i >= 3:
             bar["low" if side == "long" else "high"] = away_extremes[i - 3]
-        series.on_bar(bar, 570 + 5 * i, "2026-09-15", None)
+        for minute in range(5):
+            series.on_bar(bar, 570 + 5 * i + minute, "2026-09-15", None)
     series.on_bar({"open": closes[-1], "high": closes[-1] + 1,
                    "low": closes[-1] - 1, "close": closes[-1], "volume": 1},
                   595, "2026-09-15", None)

@@ -236,6 +236,17 @@ def _build_catalog() -> list[TriggerDef]:
                    "A completed candle pokes below the latest swing low but closes back above it and green.",
                    "long", _ALL_TF, params=(ParamDef("lookback", "Swing lookback", 5, 2, 50, 1, "candles"),),
                    sessions=("rth",), default_options=("5",)))
+    failed_params = (
+        ParamDef("lookback", "Swing lookback", 20, 2, 50, 1, "candles"),
+        ParamDef("max_wait", "Return within", 3, 1, 12, 1, "candles"),
+        ParamDef("min_break_pct", "Minimum close beyond level", 0.1, 0, 5, 0.05, "%"),
+    )
+    add(TriggerDef("failed_swing_high", "Failed swing high", "Highs & lows",
+                   "A completed candle closes above a frozen swing high by the minimum distance; a later completed candle closes back below that same level within the wait window.",
+                   "short", _ALL_TF, params=failed_params, sessions=("rth",), default_options=("5",)))
+    add(TriggerDef("failed_swing_low", "Failed swing low", "Highs & lows",
+                   "A completed candle closes below a frozen swing low by the minimum distance; a later completed candle closes back above that same level within the wait window.",
+                   "long", _ALL_TF, params=failed_params, sessions=("rth",), default_options=("5",)))
     add(TriggerDef("orb_breakout", "Opening range breakout", "Highs & lows",
                    "Price breaks over the high of the first candle of the timeframe after the open. Once per day.",
                    "long", _ALL_TF, sessions=("rth",), default_options=("5",),
@@ -452,6 +463,7 @@ EVENT_LIFETIMES: dict[str, str] = {
     "break_recent_high": "once_per_candle", "break_recent_low": "once_per_candle",
     "near_last_high": "approach_edge", "near_last_low": "approach_edge",
     "reject_last_high": "completed_candle", "reject_last_low": "completed_candle",
+    "failed_swing_high": "ordered_break_return", "failed_swing_low": "ordered_break_return",
     "orb_breakout": "once_per_day", "orb_breakdown": "once_per_day",
     "orb_trade_cross": "once_per_day",
     "bull_candle_close": "completed_candle", "bear_candle_close": "completed_candle",
@@ -524,6 +536,7 @@ class SymbolSeries:
         self.candles: dict[int, deque[dict]] = {tf: deque(maxlen=_CANDLE_RING) for tf in TIMEFRAMES}
         self.partial: dict[int, Optional[dict]] = {tf: None for tf in TIMEFRAMES}
         self.completed: dict[int, bool] = {tf: False for tf in TIMEFRAMES}   # a candle completed on this bar
+        self.gap_generation: dict[int, int] = {tf: 0 for tf in TIMEFRAMES}
         self.emas: dict[tuple[int, int], _Ema] = {}
         self._studies: dict[tuple[int, str, int], tuple[tuple, pd.DataFrame]] = {}
         self.daily: dict[str, Optional[float]] = {"ema9_d": None, "ema21_d": None, "ema50_d": None,
@@ -643,10 +656,11 @@ class SymbolSeries:
             for tf in (5, 15, 30, 60):
                 prior = self.partial[tf]
                 if prior is not None:
-                    self.candles[tf].append(prior)
-                    for (etf, period), tracker in self.emas.items():
-                        if etf == tf and prior["session"] == "rth":
-                            prior.setdefault("ema_at_close", {})[period] = tracker.push(prior["close"])
+                    if self._covered(prior, tf):
+                        self.candles[tf].append(prior)
+                        for (etf, period), tracker in self.emas.items():
+                            if etf == tf and prior["session"] == "rth":
+                                prior.setdefault("ema_at_close", {})[period] = tracker.push(prior["close"])
                     self.partial[tf] = None
             # Carry the completed live session into the rolling daily reference.
             # The initial startup transition has no day extrema, so it cannot
@@ -686,24 +700,50 @@ class SymbolSeries:
             p = self.partial[tf]
             if p is None or p["key"] != key:
                 if p is not None:
-                    self.candles[tf].append(p)
-                    self.completed[tf] = True
-                    for (etf, period), e in self.emas.items():
-                        if etf == tf and p["session"] == "rth":
-                            p.setdefault("ema_at_close", {})[period] = e.push(p["close"])
+                    if self._covered(p, tf):
+                        self.candles[tf].append(p)
+                        self.completed[tf] = True
+                        for (etf, period), e in self.emas.items():
+                            if etf == tf and p["session"] == "rth":
+                                seeded = bar.get("_seed_emas", {}).get((tf, period))
+                                p.setdefault("ema_at_close", {})[period] = (
+                                    e.accept_precomputed(p["close"], seeded)
+                                    if (tf, period) in bar.get("_seed_emas", {})
+                                    else e.push(p["close"])
+                                )
+                    else:
+                        self.gap_generation[tf] += 1
                 self.partial[tf] = {"key": key, "open": o, "high": h, "low": l, "close": c, "volume": v,
-                                    "vwap": vwap, "et_min": et_min, "session": sess}
+                                    "vwap": vwap, "et_min": et_min, "session": sess,
+                                    "_last_min": et_min, "_count": 1, "_continuous": True}
             else:
+                p["_continuous"] = p["_continuous"] and et_min == p["_last_min"] + 1
+                p["_count"] += 1
+                p["_last_min"] = et_min
                 p["high"] = max(p["high"], h); p["low"] = min(p["low"], l)
                 p["close"] = c; p["volume"] += v; p["vwap"] = vwap
         return sess
+
+    @staticmethod
+    def _covered(partial: dict, tf: int) -> bool:
+        anchor = _PRE_OPEN if partial["session"] == "pre" else _RTH_OPEN
+        expected_start = anchor + partial["key"][2] * tf
+        return (partial.get("_continuous") is True and partial.get("_count") == tf
+                and partial["et_min"] == expected_start
+                and partial.get("_last_min") == expected_start + tf - 1)
 
     # ── helpers for triggers ──
     def last_completed(self, tf: int, n: int = 1) -> list[dict]:
         d = self.candles[tf]
         if len(d) < n:
             return []
-        return list(d)[-n:]
+        candles = list(d)[-n:]
+        return candles if self._contiguous(candles) else []
+
+    @staticmethod
+    def _contiguous(candles: list[dict]) -> bool:
+        return all(a["key"][:2] != b["key"][:2] or b["key"][2] == a["key"][2] + 1
+                   for a, b in zip(candles, candles[1:]))
 
     def atr(self, tf: int, n: int = 20) -> Optional[float]:
         values = self.study(tf, "atr", n)
@@ -812,10 +852,14 @@ def consec_streak(series: "SymbolSeries", tf: int,
     else:
         return 0
     n = 0
+    later = None
     for x in reversed(cs):
+        if later is not None and not series._contiguous([x, later]):
+            break
         if not test(x):
             break
         n += 1
+        later = x
     return sign * n
 
 
@@ -1195,6 +1239,65 @@ def _t_rlh(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
 @_impl("reject_last_low")
 def _t_rll(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     return _reject(c, int(opt), int(p["lookback"]), "low")
+
+
+def _failed_swing(c: EvalCtx, tf: int, p: dict, side: str) -> Optional[Fire]:
+    s = c.series
+    if not s.completed[tf]:
+        return None
+    cur = s.last_completed(tf)[-1]
+    scope = c.memory_scope
+    key = f"{scope}|failed_swing"
+    memory = s.mem.setdefault(key, {})
+    if memory.get("last_key") == cur["key"]:
+        return None
+    memory["last_key"] = cur["key"]
+
+    pending = memory.get("pending")
+    if pending:
+        break_key = pending["break_key"]
+        elapsed = cur["key"][2] - break_key[2]
+        if (cur["key"][:2] != break_key[:2] or elapsed > int(p["max_wait"])):
+            memory.pop("pending", None)
+        elif pending.get("gap_generation") != s.gap_generation[tf]:
+            memory.pop("pending", None)
+        elif elapsed > 0:
+            level = pending["level"]
+            returned = cur["close"] < level if side == "high" else cur["close"] > level
+            if returned:
+                memory.pop("pending", None)
+                direction = "short" if side == "high" else "long"
+                relation = "below" if side == "high" else "above"
+                return Fire(direction, level,
+                            f"broke {TF_LABEL[tf]} {side} {level:.2f} with close {pending['break_close']:.2f}; "
+                            f"returned {relation} frozen level with close {cur['close']:.2f}")
+            return None
+
+    lookback = int(p["lookback"])
+    cs = s.last_completed(tf, lookback + 1)
+    if not cs:
+        return None
+    prev = cs[:-1]
+    # A swing must be formed entirely in today's regular session.
+    if any(x["key"][:2] != cur["key"][:2] for x in prev):
+        return None
+    level = max(x["high"] for x in prev) if side == "high" else min(x["low"] for x in prev)
+    margin = level * float(p["min_break_pct"]) / 100
+    broke = cur["close"] > level + margin if side == "high" else cur["close"] < level - margin
+    if broke:
+        memory["pending"] = {"level": level, "break_key": cur["key"], "break_close": cur["close"],
+                             "gap_generation": s.gap_generation[tf]}
+    return None
+
+
+@_impl("failed_swing_high")
+def _t_fsh(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
+    return _failed_swing(c, int(opt), p, "high")
+
+
+@_impl("failed_swing_low")
+def _t_fsl(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
+    return _failed_swing(c, int(opt), p, "low")
 
 
 def _orb(c: EvalCtx, tf: int, up: bool) -> Optional[Fire]:

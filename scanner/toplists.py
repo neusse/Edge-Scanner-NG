@@ -296,7 +296,14 @@ class ToplistEngine:
         if name not in TOPLISTS:
             raise ValueError(f"unknown toplist: {name}")
         limit = max(1, int(limit))
-        keep, uni = self._filter_for(name)
+        profile_keep, uni = self._filter_for(name)
+        dynamic_ready = getattr(self._scanner, "dynamic_ranking_enabled", None)
+
+        def keep(symbol: str, state: Any) -> bool:
+            if callable(dynamic_ready) and not dynamic_ready(symbol):
+                return False
+            return profile_keep(symbol, state) if profile_keep is not None else True
+
         key = f"{name}|{uni.get('hash') or '-'}"
         now = time.monotonic()
         with self._lock:

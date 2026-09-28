@@ -27,6 +27,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
@@ -50,9 +51,9 @@ from scanner import local_guard
 from scanner.feed_hub import FeedHub
 from scanner.data import FEEDS, make_feed
 from scanner.live_scanner import LiveScanner
+from scanner.startup_stream import EarlyStreamSession, StartupBarBuffer
 from scanner.instance_lock import ScannerInstanceLock
 from scanner.market_session import session_close, stop_stream_at_close
-from scanner.market import classify_market
 from scanner.custom_setups import CustomEvaluator
 from scanner.fundamentals import get_cache as get_fundamentals_cache
 from scanner.profiles import ProfileEngine
@@ -460,6 +461,47 @@ def main() -> None:
     elif os.environ.get("ALPACA_FEED", "sip").strip().lower() == "iex":
         print("       *** ALPACA_FEED=iex: free single-exchange data. Volume and RVOL read far "
               "lower than on SIP, so volume-based setups fire much less. ***", flush=True)
+
+    # Schwab's one WebSocket starts as soon as the universe is known, before
+    # any history/cache work. Bars wait in this bounded buffer until the
+    # scanner has a complete historical and current-session baseline.
+    early_stream: EarlyStreamSession | None = None
+    startup_buffer: StartupBarBuffer | None = None
+    close_watcher_stop: threading.Event | None = None
+    if args.feed == "schwab":
+        references = set(sector_etfs)
+        subscription_symbols = list(dict.fromkeys(["SPY", *symbols, *sector_etfs]))
+        startup_buffer = StartupBarBuffer(
+            max_events=max(100_000, len(subscription_symbols) * 500),
+            priority=lambda bar: (
+                0 if bar.get("symbol") == "SPY"
+                else 1 if bar.get("symbol") in references
+                else 2
+            ),
+        )
+        if hasattr(feed, "trade_callback"):
+            feed.trade_callback = None
+        early_stream = EarlyStreamSession(feed, subscription_symbols, startup_buffer)
+        early_stream.start()
+        early_stream.started.wait(5.0)
+        early_stream.check()
+        print("       Schwab stream starting; buffering bars during startup", flush=True)
+
+        if schwab_close is not None:
+            close_watcher_stop = threading.Event()
+
+            def _stop_after_close() -> None:
+                def _stop() -> None:
+                    print("\nNYSE session closed; stopping Schwab stream.", flush=True)
+                    screener = getattr(feed, "screener_book", None)
+                    if screener is not None:
+                        screener.finalize("market_close")
+                    feed.stop_stream()
+                stop_stream_at_close(schwab_close, _stop, close_watcher_stop)
+
+            threading.Thread(target=_stop_after_close, daemon=True,
+                             name="schwab-session-close").start()
+
     history_started = time.perf_counter()
     spy_daily, symbol_daily, sector_daily = _fetch_daily_history(
         feed, symbols, sector_etfs, args.history_days
@@ -480,6 +522,8 @@ def main() -> None:
     # ── 5. Warmup ─────────────────────────────────────────────────────────────
     _step(5, TOTAL_STEPS, "Warming up scanner ...")
     scanner = LiveScanner(symbols, feed, sector_map=sector_map)
+    if early_stream is not None:
+        scanner.guard_live_continuity()
     app_state = AppState(scanner=scanner, feed=feed, keep_days=args.keep_days,
                          hub=FeedHub(store_dir=Path(args.alerts_dir) / "all", keep_days=args.keep_days,
                                      load_persisted=True))
@@ -487,6 +531,8 @@ def main() -> None:
     # and the post-bar hook below see the same instance.
     event_buffer = EventBuffer()
     app_state.event_buffer = event_buffer
+    if startup_buffer is not None:
+        app_state.startup_buffer = startup_buffer
     scanner.warmup(spy_daily, symbol_daily, sector_daily=sector_daily,
                    bars_5m=bars_5m,
                    session_date=pd.Timestamp.now(tz="America/New_York").date())
@@ -516,13 +562,13 @@ def main() -> None:
     # VWAP ≈ current price for the first hour after startup → regime=NEUTRAL → no alerts.
     # today_spy is also reused in step 5c to seed each symbol's _spy_5m / rrs_m5.
     today_spy: pd.DataFrame = pd.DataFrame()
+    seed_cutoffs: dict[str, pd.Timestamp] = {}
     print("       Seeding today's SPY VWAP ...", flush=True)
     try:
         today_spy = feed.get_todays_bars("SPY", "1Min")
         if not today_spy.empty and scanner._spy_state is not None:
-            seeded = 0
-            for ts, row in today_spy.iterrows():
-                bar_dict = {
+            spy_seed_bars = [
+                {
                     "symbol":    "SPY",
                     "timestamp": ts,
                     "open":      float(row["open"]),
@@ -531,10 +577,10 @@ def main() -> None:
                     "close":     float(row["close"]),
                     "volume":    float(row["volume"]),
                 }
-                scanner._spy_state.on_bar(bar_dict)
-                scanner._latest_spy_bar = bar_dict
-                scanner._regime = classify_market(bar_dict["close"], scanner._spy_state.vwap)
-                seeded += 1
+                for ts, row in today_spy.iterrows()
+            ]
+            seeded = scanner.seed_spy_session_bars(spy_seed_bars)
+            seed_cutoffs["SPY"] = max(pd.Timestamp(bar["timestamp"]) for bar in spy_seed_bars)
             # VWAP accumulates during regular hours only, so pre-market it is
             # legitimately None. Formatting it with :.2f raised inside the try
             # and printed "Could not seed SPY VWAP", which was alarming and
@@ -578,6 +624,8 @@ def main() -> None:
             "volume":    float(spy_row["volume"]),
         }
     seeded_from_bars: set[str] = set()
+    seed_timings: list[tuple[float, str, int]] = []
+    seed_failures: list[tuple[str, str]] = []
     try:
         all_syms = scanner.ranked_symbols()      # most liquid first: a provider may seed only the top
         sector_syms = sorted(set(sector_map.values()) - {"SPY"})
@@ -600,20 +648,33 @@ def main() -> None:
             state = scanner._states.get(sym)
             if state is None or sym_bars.empty:
                 continue
-            state._reset_intraday()  # clear any partial state from warmup
-            sector_bars = sector_bar_maps.get(sector_map.get(sym, ""), {})
-            for ts, row in sym_bars.iterrows():
-                scanner.seed_session_bar({
-                    "symbol":    sym,
-                    "timestamp": ts,
-                    "open":      float(row["open"]),
-                    "high":      float(row["high"]),
-                    "low":       float(row["low"]),
-                    "close":     float(row["close"]),
-                    "volume":    float(row["volume"]),
-                    "source": "schwab_history_1m" if args.feed == "schwab" else "alpaca_history_1m",
-                }, spy_bar_map.get(ts), sector_bars.get(ts))
-            seeded_from_bars.add(sym)
+            symbol_started = time.perf_counter()
+            try:
+                state._reset_intraday()  # clear any partial state from warmup
+                sector_bars = sector_bar_maps.get(sector_map.get(sym, ""), {})
+                seed_bars = [
+                    {
+                        "symbol":    sym,
+                        "timestamp": ts,
+                        "open":      float(row["open"]),
+                        "high":      float(row["high"]),
+                        "low":       float(row["low"]),
+                        "close":     float(row["close"]),
+                        "volume":    float(row["volume"]),
+                        "source": "schwab_history_1m" if args.feed == "schwab" else "alpaca_history_1m",
+                    }
+                    for ts, row in sym_bars.iterrows()
+                ]
+                scanner.seed_session_bars(seed_bars, spy_bar_map, sector_bars)
+                seed_cutoffs[sym] = max(pd.Timestamp(bar["timestamp"]) for bar in seed_bars)
+                seeded_from_bars.add(sym)
+                seed_timings.append((time.perf_counter() - symbol_started, sym, len(seed_bars)))
+            except Exception as exc:
+                # An unseeded symbol is not continuous and must not be allowed
+                # to evaluate. Other symbols can still become ready normally.
+                scanner._states.pop(sym, None)
+                seed_failures.append((sym, str(exc)))
+                log.warning("Intraday state seeding failed for %s", sym, exc_info=True)
         print(
             f"       {len(seeded_from_bars)}/{len(all_syms)} symbols seeded from bars"
             f"  ({len(all_syms) - len(seeded_from_bars)} missing)"
@@ -644,6 +705,7 @@ def main() -> None:
                 _bar = {"symbol": sym, "timestamp": stamp, "open": q["open"], "high": q["high"],
                         "low": q["low"], "close": q["last"], "volume": q["volume"]}
                 state.on_bar(_bar)
+                seed_cutoffs[sym] = stamp
                 # The candle rings get the day's high and low only, never this bar:
                 # it holds the whole session's volume, and as a candle it read as a
                 # 10x to 25x volume spike the moment its 5-minute candle closed
@@ -664,7 +726,6 @@ def main() -> None:
     # nothing to alert on anyway.)
 
     # ── 5d. Start dashboard API ───────────────────────────────────────────────
-    import threading
     import uvicorn
     if not args.no_fundamentals:
         fundamentals_cache = get_fundamentals_cache()
@@ -762,28 +823,39 @@ def main() -> None:
 
     scanner._on_bar = _on_bar_diag
 
-    close_watcher_stop = None
     if args.feed == "schwab" and schwab_close is not None:
-        # Allow the last 15:59/12:59 bar to arrive, then stop the single stream
-        # from a separate thread. Stopping it in a Windows signal handler can
-        # deadlock the stream's own event loop.
-        close_watcher_stop = threading.Event()
         close_deadline = schwab_close + timedelta(seconds=90)
-
-        def _stop_after_close() -> None:
-            def _stop() -> None:
-                print("\nNYSE session closed; stopping Schwab stream.", flush=True)
-                feed.stop_stream()
-            stop_stream_at_close(schwab_close, _stop, close_watcher_stop)
-
         if datetime.now(ZoneInfo("UTC")) >= close_deadline:
-            print("NYSE session closed during warmup; Schwab stream was not opened.", flush=True)
+            print("NYSE session closed during warmup; the buffered Schwab stream has stopped.", flush=True)
             app_state.hub.set_status("stopping")
             return
-        threading.Thread(target=_stop_after_close, daemon=True, name="schwab-session-close").start()
+
+    if early_stream is not None and startup_buffer is not None:
+        early_stream.check()
+        startup_stats = startup_buffer.activate(
+            scanner.prime_stream_bar, _on_bar_diag, cutoffs=seed_cutoffs,
+            ready=scanner.configure_trade_callback,
+        )
+        print(
+            f"       Startup stream reconciled: {startup_stats['primed']} primed, "
+            f"{startup_stats['overlap']} cache overlap, {startup_stats['dropped']} dropped",
+            flush=True,
+        )
+        if seed_timings:
+            slowest = sorted(seed_timings, reverse=True)[:5]
+            print("       Slowest state seeds: " + ", ".join(
+                f"{sym} {elapsed:.3f}s/{bars} bars" for elapsed, sym, bars in slowest
+            ), flush=True)
+        if seed_failures:
+            print("       WARNING: state seed failed for " + ", ".join(
+                f"{sym} ({error})" for sym, error in seed_failures[:10]
+            ), flush=True)
 
     try:
-        scanner.connect()
+        if early_stream is not None:
+            early_stream.wait()
+        else:
+            scanner.connect()
     except (KeyboardInterrupt, TimeoutError):
         pass
     finally:

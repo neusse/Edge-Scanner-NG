@@ -16,7 +16,7 @@ def test_contract_matrix_has_an_explicit_row_and_lifetime_for_every_native_trigg
     from scanner.trigger_catalog import EVENT_LIFETIMES
 
     native = {trigger.id for trigger in CATALOG if trigger.source == "native"}
-    assert len(native) == 53
+    assert len(native) == 55
     assert set(EVENT_LIFETIMES) == native
     matrix = (Path(__file__).resolve().parents[1] / "docs" / "TRIGGER_CONTRACTS.md").read_text()
     for trigger_id in native:
@@ -336,6 +336,58 @@ def test_swing_rejections_need_a_completed_return_inside(trigger, current, direc
     assert fire is not None and fire.direction == direction
     ctx.series.completed[5] = False
     assert evaluate(trigger, ctx, "5", {"lookback": 1}) is None
+
+
+@pytest.mark.parametrize("trigger,base,break_bar,return_bar,direction,level", [
+    ("failed_swing_low", (100, 101, 99, 100), (99, 99.5, 98.7, 98.8),
+     (98.8, 99.6, 98.7, 99.2), "long", 99),
+    ("failed_swing_high", (100, 101, 99, 100), (101, 101.4, 100.6, 101.2),
+     (101.2, 101.3, 100.4, 100.8), "short", 101),
+])
+def test_failed_swing_requires_later_completed_return(trigger, base, break_bar,
+                                                       return_bar, direction, level):
+    prior = [candle(*base, i) for i in range(20)]
+    ctx = context(prior)
+    params = {"lookback": 20, "max_wait": 3, "min_break_pct": 0.1}
+    # A wick back inside on the break bar cannot fire: the close must finish outside.
+    wick_ctx = context(prior + [candle(*return_bar, 20)])
+    assert evaluate(trigger, wick_ctx, "5", params) is None
+    ctx.series.candles[5].append(candle(*break_bar, 20))
+    assert evaluate(trigger, ctx, "5", params) is None
+    ctx.series.completed[5] = False
+    ctx.series.candles[5].append(candle(*return_bar, 21))
+    assert evaluate(trigger, ctx, "5", params) is None
+    ctx.series.completed[5] = True
+    fire = evaluate(trigger, ctx, "5", params)
+    assert fire is not None and fire.direction == direction and fire.value == level
+    assert "broke" in fire.note and "returned" in fire.note
+    assert evaluate(trigger, ctx, "5", params) is None
+
+
+def test_failed_swing_expires_and_ignores_tiny_break():
+    ctx = context([candle(100, 101, 99, 100, i) for i in range(20)])
+    params = {"lookback": 20, "max_wait": 2, "min_break_pct": 0.1}
+    ctx.series.candles[5].append(candle(99, 99.5, 98.95, 98.95, 20))
+    assert evaluate("failed_swing_low", ctx, "5", params) is None
+    ctx.series.candles[5].append(candle(98.95, 99.4, 98.8, 99.2, 21))
+    assert evaluate("failed_swing_low", ctx, "5", params) is None
+    ctx = context([candle(100, 101, 99, 100, i) for i in range(20)])
+    ctx.series.candles[5].append(candle(99, 99.5, 98.7, 98.8, 20))
+    assert evaluate("failed_swing_low", ctx, "5", params) is None
+    for index in (21, 22, 23):
+        ctx.series.candles[5].append(candle(98.8, 98.9, 98.5, 98.7, index))
+        assert evaluate("failed_swing_low", ctx, "5", params) is None
+    ctx.series.candles[5].append(candle(98.7, 99.4, 98.6, 99.2, 24))
+    assert evaluate("failed_swing_low", ctx, "5", params) is None
+
+
+def test_failed_swing_low_rejects_xel_same_candle_wick():
+    prior = [candle(68.9, 69.0, 68.75, 68.9, i) for i in range(20)]
+    xel_candle = candle(68.75, 68.9, 68.72, 68.87, 20)
+    ctx = context(prior + [xel_candle])
+    assert evaluate("failed_swing_low", ctx, "5",
+                    {"lookback": 20, "max_wait": 3, "min_break_pct": 0.1}) is None
+    assert not any("pending" in value for value in ctx.series.mem.values() if isinstance(value, dict))
 
 
 def test_orb_breakdown_first_strict_cross_and_daily_latch():

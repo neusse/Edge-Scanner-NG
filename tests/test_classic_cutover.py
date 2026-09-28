@@ -1,5 +1,6 @@
 """Public calculation, catalog, trigger, and chart boundaries for Classic."""
 from types import SimpleNamespace
+import warnings
 
 import pandas as pd
 import pytest
@@ -35,6 +36,52 @@ def test_indicator_prefix_cannot_see_later_bars(study):
     full = calculate(frame, study).iloc[:50]
     prefix = calculate(frame.iloc[:50], study)
     pd.testing.assert_frame_equal(full, prefix)
+
+
+def test_vwap_normalizes_shuffled_candles_without_warnings(caplog):
+    chronological = _frame(40)
+    shuffled = chronological.sample(frac=1.0, random_state=17)
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        actual = calculate(shuffled, "vwap").sort_index()
+
+    expected = calculate(chronological, "vwap")
+    assert not recorded
+    assert "not datetime ordered" not in caplog.text
+    assert "sorting by timestamp" in caplog.text
+    pd.testing.assert_frame_equal(actual, expected, check_freq=False)
+
+
+def test_vwap_timestamp_contract_is_explicit():
+    frame = _frame(4)
+
+    duplicate = pd.concat([frame, frame.iloc[[-1]]])
+    with pytest.raises(ValueError, match="unique timestamps"):
+        calculate(duplicate, "vwap")
+
+    missing = frame.copy()
+    missing.index = pd.DatetimeIndex([*frame.index[:-1], pd.NaT])
+    with pytest.raises(ValueError, match="valid timestamps"):
+        calculate(missing, "vwap")
+
+    naive = frame.copy()
+    naive.index = naive.index.tz_localize(None)
+    result = calculate(naive, "vwap")
+    assert result.index.equals(naive.index)
+    assert result.notna().all().all()
+
+
+def test_vwap_resets_between_sessions_in_one_frame():
+    first = _frame(4)
+    second = _frame(4)
+    second.index = second.index + pd.Timedelta(days=1)
+    second.loc[:, ["open", "high", "low", "close"]] += 50.0
+    combined = calculate(pd.concat([first, second]), "vwap")
+
+    expected_second = calculate(second, "vwap")
+    pd.testing.assert_frame_equal(combined.loc[second.index], expected_second,
+                                  check_freq=False)
 
 
 def test_classic_checks_are_selectable_and_use_completed_candles():

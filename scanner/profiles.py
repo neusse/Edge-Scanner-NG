@@ -459,6 +459,36 @@ class ProfileEngine:
             log.info("profile %s: %d / %d symbols pass the static conditions",
                      cp.id, len(members), len(states))
 
+    def resolve_symbol(self, symbol: str, state: Any,
+                       fundamentals: Optional[dict] = None) -> None:
+        """Add or remove one mid-session symbol from every static member set.
+
+        Dynamic admission must not rebuild the full universe or invalidate the
+        already-resolved membership of existing symbols.  Copy-on-write keeps
+        readers on a coherent frozen set while this one symbol is evaluated.
+        Profiles without static conditions continue to use ``members=None``.
+        """
+        symbol = str(symbol).upper()
+        with self._lock:
+            profiles = list(self._compiled.values())
+        for cp in profiles:
+            if not cp.static:
+                continue
+            if cp.members is None:
+                # The initial cohort has not been resolved yet. Leave the
+                # profile on its existing inline-evaluation path instead of
+                # manufacturing a one-symbol member set.
+                continue
+            ctx = ConditionCtx(state=state, series=None, bar=None,
+                               fundamentals=fundamentals)
+            passed = all(check_condition(condition, ctx).passed for condition in cp.static)
+            members = set(cp.members)
+            if passed:
+                members.add(symbol)
+            else:
+                members.discard(symbol)
+            cp.members = frozenset(members)
+
     def invalidate_members(self) -> None:
         for cp in self._compiled.values():
             cp.members = None

@@ -217,7 +217,11 @@ def create_app(app_state: AppState) -> FastAPI:
 
     @app.get("/api/feed/status")
     async def get_feed_status() -> JSONResponse:
-        return JSONResponse(app_state.hub.status_snapshot())
+        payload = app_state.hub.status_snapshot()
+        startup = getattr(app_state, "startup_buffer", None)
+        if startup is not None:
+            payload["startup"] = startup.snapshot()
+        return JSONResponse(payload)
 
     @app.get("/api/feed/clients")
     async def get_feed_clients() -> JSONResponse:
@@ -583,6 +587,9 @@ def _merge_chart_bars(history: list[dict], minutes: list[dict], timeframe: str) 
         return history
     width = _INTRADAY_MINUTES[timeframe]
     live: dict[str, dict] = {}
+    coverage: dict[str, set[int]] = {}
+    latest_key: str | None = None
+    latest_stamp = None
     for raw in minutes:
         try:
             stamp = pd.Timestamp(raw["timestamp"])
@@ -596,6 +603,9 @@ def _merge_chart_bars(history: list[dict], minutes: list[dict], timeframe: str) 
             else:
                 bucket = stamp.floor(f"{width}min")
             key = bucket.isoformat()
+            coverage.setdefault(key, set()).add(int((stamp - bucket).total_seconds() // 60))
+            if latest_stamp is None or stamp > latest_stamp:
+                latest_stamp, latest_key = stamp, key
             entry = live.get(key)
             if entry is None:
                 live[key] = {"t": key, "o": float(raw["open"]), "h": float(raw["high"]),
@@ -609,7 +619,12 @@ def _merge_chart_bars(history: list[dict], minutes: list[dict], timeframe: str) 
         except (KeyError, TypeError, ValueError):
             continue
     by_time = {row["t"]: row for row in history}
-    by_time.update(live)
+    for key, row in live.items():
+        # A past bucket assembled from fewer than all source minutes is not a
+        # closed candle. Retain fetched history when available, or omit it.
+        # Only the latest bucket may be displayed as a developing chart candle.
+        if coverage[key] == set(range(width)) or key == latest_key:
+            by_time[key] = row
     return [by_time[t] for t in sorted(by_time)]
 
 

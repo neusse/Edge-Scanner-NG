@@ -3,15 +3,15 @@ title Scanner Live
 cd /d "%~dp0"
 
 REM ---------------------------------------------------------------------------
-REM The symbol list to scan. Without --universe, run_live.py uses
-REM data/universe.csv and rebuilds it weekly with scripts/build_universe.py.
+REM The symbol list to scan. Morning startup always uses the selected file as
+REM as-is; the after-close refresh job owns scheduled universe/cache maintenance.
 REM To scan a wider list, build it once and this script picks it up:
 REM   python scripts/build_universe.py --out data/universe_all.csv
-REM A file passed with --universe is used verbatim (no age check, no weekly
-REM rebuild), so rebuild it by hand when its liquidity numbers get stale.
+REM Passing an absolute path makes run_live.py treat the file as an explicit
+REM universe (no age check or surprise rebuild during startup).
 REM ---------------------------------------------------------------------------
-set "UNIVERSE_ARG="
-if exist "data\universe_all.csv" set "UNIVERSE_ARG=--universe data/universe_all.csv"
+set "UNIVERSE_FILE=%~dp0data\universe.csv"
+if exist "data\universe_all.csv" set "UNIVERSE_FILE=%~dp0data\universe_all.csv"
 
 REM ---------------------------------------------------------------------------
 REM Daily history, in CALENDAR days. 380 covers about 252 sessions, the longest
@@ -35,7 +35,7 @@ if errorlevel 1 exit /b 1
 
 REM Anything passed to this script is appended, so extra flags still work:
 REM   start_scanner.bat --log-level INFO
-"%PYTHON_EXE%" scripts/run_live.py %UNIVERSE_ARG% --history-days %HISTORY_DAYS% %*
+"%PYTHON_EXE%" scripts/run_live.py --universe "%UNIVERSE_FILE%" --history-days %HISTORY_DAYS% %*
 
 echo.
 echo === Scanner exited ===

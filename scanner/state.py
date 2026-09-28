@@ -315,10 +315,16 @@ class SymbolState:
         # Classic VWAP on completed RTH candles only. Keep the full session so
         # startup seeding and live updates use the same calculation and anchor.
         self._vwap_bars.append(self._last_1m[-1])
-        vwap_frame = pd.DataFrame(self._vwap_bars)
-        vwap_frame.index = pd.DatetimeIndex(vwap_frame["timestamp"])
-        vwap_last = session_vwap(vwap_frame.high, vwap_frame.low,
-                                 vwap_frame.close, vwap_frame.volume).iloc[-1]
+        if "_seed_vwap" in bar:
+            # Bulk startup seeding calculates the complete Classic VWAP series
+            # once, then replays its values through the normal state machine.
+            # Live bars deliberately keep using the public Classic calculation.
+            vwap_last = bar["_seed_vwap"]
+        else:
+            vwap_frame = pd.DataFrame(self._vwap_bars)
+            vwap_frame.index = pd.DatetimeIndex(vwap_frame["timestamp"])
+            vwap_last = session_vwap(vwap_frame.high, vwap_frame.low,
+                                     vwap_frame.close, vwap_frame.volume).iloc[-1]
         self._vwap_value = None if pd.isna(vwap_last) else float(vwap_last)
         self._cum_vol += vol
 
@@ -345,16 +351,17 @@ class SymbolState:
         stock_5m_completed = len(self._stock_5m) > prev_5m_len
         if stock_5m_completed:
             close_5m = self._stock_5m[-1]["close"]
-            self._prev_ema_3 = self._ema_3
-            self._prev_ema_9 = self._ema_9
-            self._ema_3 = self._ema_trackers[_EMA_SHORT].push(close_5m)
-            self._ema_9 = self._ema_trackers[_EMA_LONG].push(close_5m)
+            if not bar.get("_seed_series_emas"):
+                self._prev_ema_3 = self._ema_3
+                self._prev_ema_9 = self._ema_9
+                self._ema_3 = self._ema_trackers[_EMA_SHORT].push(close_5m)
+                self._ema_9 = self._ema_trackers[_EMA_LONG].push(close_5m)
 
-            # EMA 8/21 (for new triggers)
-            self._prev_ema_8  = self._ema_8
-            self._prev_ema_21 = self._ema_21
-            self._ema_8  = self._ema_trackers[_EMA_MED].push(close_5m)
-            self._ema_21 = self._ema_trackers[_EMA_TREND].push(close_5m)
+                # EMA 8/21 (for new triggers)
+                self._prev_ema_8  = self._ema_8
+                self._prev_ema_21 = self._ema_21
+                self._ema_8  = self._ema_trackers[_EMA_MED].push(close_5m)
+                self._ema_21 = self._ema_trackers[_EMA_TREND].push(close_5m)
 
             # Store snapshots in the completed bar dict for lookback-based triggers
             completed_bar = self._stock_5m[-1]
@@ -708,12 +715,16 @@ def _aggregate_into_slot(
 ) -> dict:
     """Merge a 1-min bar into the current partial 5-min bar.
 
-    If `bar` belongs to a new slot, finalise the previous partial bar
-    (push to `completed`) and start a fresh one.  Returns the updated partial.
+    If `bar` belongs to a new slot, finalise the previous partial only when
+    all five source minutes were observed in order. Returns the new partial.
     """
     if partial is None or partial["slot"] != slot:
-        if partial is not None:
+        if (partial is not None and partial.get("_continuous") is True
+                and partial.get("_count") == 5
+                and partial.get("_first_min") == partial["slot"]
+                and partial.get("_last_min") == partial["slot"] + 4):
             completed.append(partial)
+        minute = _et_minutes(bar["timestamp"])
         partial = {
             "slot":      slot,
             "timestamp": bar["timestamp"],
@@ -722,8 +733,16 @@ def _aggregate_into_slot(
             "low":       bar["low"],
             "close":     bar["close"],
             "volume":    bar["volume"],
+            "_first_min": minute,
+            "_last_min": minute,
+            "_count": 1,
+            "_continuous": True,
         }
     else:
+        minute = _et_minutes(bar["timestamp"])
+        partial["_continuous"] = partial["_continuous"] and minute == partial["_last_min"] + 1
+        partial["_count"] += 1
+        partial["_last_min"] = minute
         partial["high"]   = max(partial["high"],  bar["high"])
         partial["low"]    = min(partial["low"],   bar["low"])
         partial["close"]  = bar["close"]

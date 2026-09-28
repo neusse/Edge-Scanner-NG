@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 from fastapi.testclient import TestClient
 
-from scanner.api import AppState, create_app
+from scanner.api import AppState, _merge_chart_bars, create_app
 from scanner.live_scanner import LiveScanner
 from tests.test_live_scanner import _FakeFeed, _warmup
 
@@ -69,3 +69,21 @@ def test_five_minute_chart_aggregates_new_streamed_minutes_without_refetch():
     assert candle["t"][11:16] == "10:00"
     assert (candle["o"], candle["h"], candle["c"], candle["v"]) == (101.0, 103.0, 102.5, 500.0)
     assert feed.history_calls == [("AAPL", "5Min")]
+
+
+def test_past_incomplete_five_minute_overlay_cannot_replace_complete_history():
+    history = [{"t": "2026-09-25T12:10:00-04:00", "o": 46.825, "h": 46.85,
+                "l": 46.75, "c": 46.775, "v": 58132.0}]
+    minutes = [
+        {"timestamp": "2026-09-25T12:10:00-04:00", "open": 46.825,
+         "high": 46.84, "low": 46.82, "close": 46.835, "volume": 4958},
+        {"timestamp": "2026-09-25T12:11:00-04:00", "open": 46.835,
+         "high": 46.84, "low": 46.83, "close": 46.835, "volume": 3687},
+        {"timestamp": "2026-09-25T12:18:00-04:00", "open": 46.71,
+         "high": 46.73, "low": 46.70, "close": 46.71, "volume": 11819},
+        {"timestamp": "2026-09-25T12:20:00-04:00", "open": 46.73,
+         "high": 46.74, "low": 46.72, "close": 46.72, "volume": 8556},
+    ]
+    merged = _merge_chart_bars(history, minutes, "5min")
+    assert next(row for row in merged if row["t"] == history[0]["t"]) == history[0]
+    assert not any(row["t"] == "2026-09-25T12:15:00-04:00" for row in merged)

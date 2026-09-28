@@ -112,6 +112,23 @@ def test_engine_without_a_profile_engine_is_unfiltered(tmp_path: Path):
     assert out["universe"]["id"] is None
 
 
+def test_dynamic_symbol_enters_rankings_only_after_readiness(tmp_path: Path):
+    class Scanner:
+        _states = {"BASE": FakeState(rvol=1.0, symbol="BASE"),
+                   "NEW": FakeState(rvol=9.0, symbol="NEW")}
+        _series: dict = {}
+        ready = False
+
+        def dynamic_ranking_enabled(self, symbol):
+            return symbol != "NEW" or self.ready
+
+    scanner = Scanner()
+    top = ToplistEngine(scanner, ttl=0.0, settings=ToplistSettings(tmp_path / "tl.json"))
+    assert [row["symbol"] for row in top.compute("rvol")["rows"]] == ["BASE"]
+    scanner.ready = True
+    assert [row["symbol"] for row in top.compute("rvol")["rows"]] == ["NEW", "BASE"]
+
+
 # ── assignment keys ──────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("key", ["toplist:rvol"])

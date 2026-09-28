@@ -53,6 +53,7 @@ class QuoteBook:
         self.max_history_total = max_history_total
         self._updates = deque(maxlen=max_updates)
         self._seq = 0
+        self._last_stream_receipt_ms = None
 
     def cover(self, symbol, source="schwab_levelone", tier="stream", status="subscribing"):
         symbol = str(symbol).upper().strip()
@@ -76,6 +77,7 @@ class QuoteBook:
         with self._lock:
             if not active:
                 self.connection_epoch += 1
+                self._last_stream_receipt_ms = None
             for row in self._rows.values():
                 if row["tier"] != "stream" or row["coverage"] in ("cap_exceeded", "not_watched"):
                     continue
@@ -85,6 +87,11 @@ class QuoteBook:
                     row["coverage"] = "subscribing"
                 if not active:
                     row["delayed"] = None
+
+    def stream_activity(self, *, receipt_ms=None):
+        """Record receipt of any message on the shared stream, not a side change."""
+        with self._lock:
+            self._last_stream_receipt_ms = int(receipt_ms if receipt_ms is not None else time.time() * 1000)
 
     def ingest(self, symbol, fields, *, receipt_ms=None, source="schwab_levelone",
                tier="stream", delayed=None, block_ms=None):
@@ -99,6 +106,8 @@ class QuoteBook:
         with self._lock:
             if not self.cover(symbol, source, tier, "live"):
                 return None
+            if tier == "stream":
+                self._last_stream_receipt_ms = receipt_ms
             row = self._rows[symbol]
             row["receipt_ms"] = receipt_ms
             if delayed is not None:
@@ -109,7 +118,14 @@ class QuoteBook:
                     continue
                 value, market_ms, size = incoming
                 old = row["fields"].get(side)
-                market_ms = _ms(market_ms) or (old or {}).get("market_ms")
+                prior_epoch = (old or {}).get("connection_epoch")
+                new_generation = tier == "stream" and old is not None and prior_epoch != self.connection_epoch
+                if new_generation and value is None:
+                    # A size/time-only delta cannot verify a carried-forward
+                    # price after a disconnect, when intermediate deltas may
+                    # have been missed.
+                    continue
+                market_ms = _ms(market_ms) or (None if new_generation else (old or {}).get("market_ms"))
                 if old and market_ms and old.get("market_ms") and market_ms < old["market_ms"]:
                     continue
                 if old and market_ms is None and old.get("market_ms") is not None:
@@ -125,7 +141,8 @@ class QuoteBook:
                         pass
                 item = {"price": price, "market_ms": market_ms,
                         "receipt_ms": receipt_ms, "size": size_value,
-                        "valid": price is not None}
+                        "valid": price is not None,
+                        "connection_epoch": self.connection_epoch if tier == "stream" else None}
                 if old != item:
                     row["fields"][side] = item
                     changed = True
@@ -159,6 +176,8 @@ class QuoteBook:
         bid, ask = data["bid"], data["ask"]
         side_age = {side: (max(0, now_ms - item["market_ms"]) if item.get("market_ms") else None)
                     for side, item in fields.items()}
+        stream_age = (max(0, now_ms - self._last_stream_receipt_ms)
+                      if self._last_stream_receipt_ms is not None else None)
         delayed = row.get("delayed")
         if row.get("coverage") in ("reconnecting", "cap_exceeded", "not_watched"):
             quality = "unavailable"
@@ -166,6 +185,10 @@ class QuoteBook:
             quality = "invalid"
         elif bid is None or ask is None:
             quality = "missing"
+        elif row["tier"] == "stream" and any(
+                fields[side].get("connection_epoch") != self.connection_epoch
+                for side in ("bid", "ask")):
+            quality = "unavailable"
         elif ask < bid:
             quality = "crossed"
         elif ask == bid:
@@ -174,7 +197,8 @@ class QuoteBook:
             quality = "delayed"
         elif any(side_age.get(s) is None for s in ("bid", "ask")):
             quality = "unverified_time"
-        elif any(side_age[s] > self.stale_after_ms for s in ("bid", "ask")):
+        elif (stream_age if row["tier"] == "stream"
+              else max(0, now_ms - row.get("receipt_ms", 0))) > self.stale_after_ms:
             quality = "stale"
         elif row.get("coverage") != "live":
             quality = "unavailable"
@@ -192,6 +216,8 @@ class QuoteBook:
                 "last_market_ms": fields.get("last", {}).get("market_ms"),
                 "bid_age_ms": side_age.get("bid"), "ask_age_ms": side_age.get("ask"),
                 "last_age_ms": side_age.get("last"), "receipt_ms": row.get("receipt_ms"),
+                "stream_receipt_ms": self._last_stream_receipt_ms if row["tier"] == "stream" else None,
+                "stream_age_ms": stream_age if row["tier"] == "stream" else None,
                 "delayed": delayed, "source": row["source"], "tier": row["tier"],
                 "coverage": row["coverage"], "session": self._session(row, now_ms),
                 "quality": quality, "midpoint": midpoint, "spread": spread,

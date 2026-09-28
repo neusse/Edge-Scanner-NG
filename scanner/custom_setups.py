@@ -495,6 +495,18 @@ class CustomEvaluator:
         self._last_eval = {}
         self._since = pd.Timestamp.utcnow().isoformat()
 
+    def clear_symbol(self, symbol: str) -> None:
+        """Drop per-symbol latches so a new dynamic epoch starts cleanly."""
+        symbol = str(symbol).upper()
+        with self._lock:
+            self._last_fire = {key: value for key, value in self._last_fire.items()
+                               if key[1] != symbol}
+            self._last_trig = {key: value for key, value in self._last_trig.items()
+                               if key[1] != symbol}
+            self._and_seen = {key: value for key, value in self._and_seen.items()
+                              if key[1] != symbol}
+            self._last_eval.pop(symbol, None)
+
     def prime_bar(self, state: Any, bar: dict, session: str,
                   external: Optional[set[str]] = None,
                   spy_mom_15m: Optional[float] = None) -> None:
@@ -570,7 +582,8 @@ class CustomEvaluator:
     # ── per bar ──
     def on_bar(self, state: Any, bar: dict, external: Optional[set[str]] = None,
                spy_mom_15m: Optional[float] = None, session: Optional[str] = None,
-               defer_commit: bool = False) -> list[dict]:
+               defer_commit: bool = False,
+               allowed_setups: Optional[frozenset[str]] = None) -> list[dict]:
         """
         Args:
             session: the session tag from an already-updated shared series.
@@ -600,6 +613,7 @@ class CustomEvaluator:
                 (setup_index, tcfg)
                 for setup_index, tcfg in users
                 if sess in plan.setups[setup_index].get("sessions", ["rth"])
+                and (allowed_setups is None or plan.setups[setup_index]["id"] in allowed_setups)
             ]
             if not eligible:
                 continue
@@ -624,6 +638,8 @@ class CustomEvaluator:
         now = ts.timestamp()
         out: list[dict] = []
         for i, s in enumerate(plan.setups):
+            if allowed_setups is not None and s["id"] not in allowed_setups:
+                continue
             if sess not in s.get("sessions", ["rth"]):
                 continue
             fired_here: list[tuple[str, str, dict, Fire]] = []
