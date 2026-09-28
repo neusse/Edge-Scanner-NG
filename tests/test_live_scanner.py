@@ -1,6 +1,7 @@
 """Unit tests for LiveScanner — warmup, bar routing, reset, and alert path."""
 from typing import Callable, Optional
 from unittest.mock import MagicMock
+import time
 
 import pandas as pd
 import pytest
@@ -11,6 +12,7 @@ from scanner.data.interface import DataFeed, Timeframe
 from scanner.live_scanner import LiveScanner
 from scanner.market import MarketRegime
 from scanner.state import SymbolState
+from scanner.indicators.classic import calculate
 from scanner.trigger_catalog import SymbolSeries
 
 
@@ -108,6 +110,121 @@ def test_warmup_skips_missing_symbol():
     scanner.warmup(spy, {"AAPL": _daily_bars(60)})
     assert "AAPL" in scanner._states
     assert "NVDA" not in scanner._states
+
+
+def test_dynamic_symbol_updates_chart_but_setup_evaluation_remains_disabled():
+    scanner, _, sink = _make_scanner()
+    _warmup(scanner)
+    evaluator = MagicMock()
+    evaluator.activity = None
+    evaluator.on_bar.return_value = [_system_alert(symbol="NEW")]
+    scanner.attach_system(evaluator, sink)
+    scanner.add_dynamic_symbol("NEW", _daily_bars(60, base=20), pd.DataFrame(), [],
+                               evaluation_enabled=False)
+
+    scanner._on_bar(_bar("NEW", 23.0, "2024-01-02 10:00"))
+    assert scanner._states["NEW"]._last_close == 23.0
+    assert scanner.chart_bars("NEW")[-1]["close"] == 23.0
+    evaluator.on_bar.assert_not_called()
+    assert scanner.dynamic_setup_enabled("NEW") is False
+
+
+def test_dynamic_readiness_enables_only_setups_with_complete_inputs(tmp_path):
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    store = CustomSetupStore(tmp_path / "custom", defaults=tmp_path / "none.json")
+    store.save({
+        "id": "hod", "name": "New HOD", "enabled": True, "mode": "or",
+        "direction": "long", "sessions": ["rth"],
+        "triggers": [{"id": "hod", "options": ["high"], "params": {}}],
+    })
+    store.save({
+        "id": "sixty", "name": "60 day", "enabled": True, "mode": "or",
+        "direction": "long", "sessions": ["rth"],
+        "triggers": [{"id": "hi_lo_60d", "options": ["high"],
+                      "params": {"days": 60}}],
+    })
+    sink = AlertSink(cooldown_minutes=0)
+    scanner.attach_custom(CustomEvaluator(store), sink)
+    scanner.add_dynamic_symbol(
+        "NEW", _daily_bars(20, base=20), pd.DataFrame(),
+        [_bar("NEW", 22.0, "2024-01-02 09:30")],
+        evaluation_enabled=False, dynamic_epoch=7,
+    )
+
+    # Bars received before the controller opens the epoch may update the chart
+    # and state, but they cannot enter any setup plan.
+    scanner._on_bar(_bar("NEW", 22.2, "2024-01-02 09:31"))
+    assert len(sink) == 0
+    readiness = scanner.activate_dynamic_symbol("NEW", 7)
+    by_id = {row["id"]: row for row in readiness["setups"]}
+    assert by_id["hod"]["status"] == "ready"
+    assert by_id["sixty"]["status"] == "unavailable"
+    assert "60 completed daily sessions" in by_id["sixty"]["reasons"][0]
+    assert scanner.dynamic_setup_available("NEW", "hod")
+    assert not scanner.dynamic_setup_available("NEW", "sixty")
+
+    scanner._on_bar(_bar("NEW", 22.4, "2024-01-02 09:32"))
+    alerts = sink.all()
+    assert [alert["setup"] for alert in alerts] == ["hod"]
+    assert pd.Timestamp(alerts[0]["source_bar"]["market_timestamp"]) == pd.Timestamp(
+        "2024-01-02 09:32", tz="America/New_York"
+    ).tz_convert("UTC")
+
+
+def test_dynamic_epoch_and_continuity_fail_closed_before_alerts(tmp_path):
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    store = CustomSetupStore(tmp_path / "custom", defaults=tmp_path / "none.json")
+    store.save({
+        "id": "hod", "name": "New HOD", "enabled": True, "mode": "or",
+        "direction": "long", "sessions": ["rth"],
+        "triggers": [{"id": "hod", "options": ["high"], "params": {}}],
+    })
+    sink = AlertSink(cooldown_minutes=0)
+    scanner.attach_custom(CustomEvaluator(store), sink)
+    baseline = _bar("NEW", 22.0, "2024-01-02 09:30")
+    scanner.add_dynamic_symbol("NEW", _daily_bars(60, base=20), pd.DataFrame(), [baseline],
+                               evaluation_enabled=False, dynamic_epoch=2)
+    scanner.guard_live_continuity()
+    with pytest.raises(ValueError, match="stale promotion epoch"):
+        scanner.activate_dynamic_symbol("NEW", 1)
+    assert not scanner.dynamic_setup_enabled("NEW")
+
+    scanner.activate_dynamic_symbol("NEW", 2)
+    scanner._on_bar({**baseline, "high": 30.0, "close": 30.0})
+    assert len(sink) == 0  # duplicate timestamp
+    scanner._on_bar(_bar("NEW", 23.0, "2024-01-02 09:35"))
+    assert len(sink) == 0  # delayed/gapped observation is synchronization
+    scanner._on_bar(_bar("NEW", 23.5, "2024-01-02 09:36"))
+    assert len(sink) == 1
+
+
+def test_dynamic_reconnect_disables_alerts_until_new_epoch_is_rewarmed(tmp_path):
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    store = CustomSetupStore(tmp_path / "custom", defaults=tmp_path / "none.json")
+    store.save({
+        "id": "hod", "name": "New HOD", "enabled": True, "mode": "or",
+        "direction": "long", "sessions": ["rth"],
+        "triggers": [{"id": "hod", "options": ["high"], "params": {}}],
+    })
+    sink = AlertSink(cooldown_minutes=0)
+    scanner.attach_custom(CustomEvaluator(store), sink)
+    baseline = _bar("NEW", 22.0, "2024-01-02 09:30")
+    daily = _daily_bars(60, base=20)
+    scanner.add_dynamic_symbol("NEW", daily, pd.DataFrame(), [baseline],
+                               evaluation_enabled=False, dynamic_epoch=4)
+    scanner.activate_dynamic_symbol("NEW", 4)
+    assert scanner.reconnect_dynamic_symbol("NEW", 4, 5) is True
+    scanner._on_bar(_bar("NEW", 23.0, "2024-01-02 09:31"))
+    assert len(sink) == 0 and scanner.dynamic_setup_enabled("NEW") is False
+
+    scanner.add_dynamic_symbol("NEW", daily, pd.DataFrame(), [baseline],
+                               evaluation_enabled=False, dynamic_epoch=5)
+    scanner.activate_dynamic_symbol("NEW", 5)
+    scanner._on_bar(_bar("NEW", 23.5, "2024-01-02 09:31"))
+    assert len(sink) == 1
 
 
 def test_warmup_prior_close_is_last_bar():
@@ -226,6 +343,88 @@ def test_seed_session_bar_keeps_state_and_custom_trigger_series_in_sync():
     assert evaluate("hod", ctx, "high", {}) is None
 
 
+def test_seed_session_bars_is_chronological_fast_and_matches_classic_vwap():
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    index = pd.date_range("2024-01-02 09:30", periods=300, freq="min",
+                          tz="America/New_York")
+    bars = [
+        _bar("AAPL", 100.0 + i / 100.0, stamp.strftime("%Y-%m-%d %H:%M"))
+        | {"volume": 1_000.0 + i}
+        for i, stamp in enumerate(index)
+    ]
+
+    started = time.perf_counter()
+    seeded = scanner.seed_session_bars(list(reversed(bars)))
+    elapsed = time.perf_counter() - started
+
+    frame = pd.DataFrame(bars).set_index("timestamp")
+    expected = calculate(frame, "vwap")["value"].iloc[-1]
+    assert seeded == len(bars)
+    assert elapsed < 1.0
+    assert scanner._states["AAPL"].vwap == pytest.approx(expected)
+    stamps = [bar["timestamp"] for bar in scanner.chart_bars("AAPL")]
+    assert stamps == sorted(stamps)
+
+
+def test_seed_session_bars_matches_serial_classic_ema_state():
+    bulk, _, _ = _make_scanner()
+    serial, _, _ = _make_scanner()
+    _warmup(bulk)
+    _warmup(serial)
+    for scanner in (bulk, serial):
+        for period in (3, 8, 9, 21):
+            scanner.series("AAPL").want_ema(5, period)
+    index = pd.date_range("2024-01-02 09:30", periods=120, freq="min",
+                          tz="America/New_York")
+    bars = [
+        _bar("AAPL", 100.0 + i / 100.0, stamp.strftime("%Y-%m-%d %H:%M"))
+        for i, stamp in enumerate(index)
+    ]
+
+    bulk.seed_session_bars(bars)
+    for bar in bars:
+        serial.seed_session_bar(bar)
+
+    for period in (3, 8, 9, 21):
+        fast = bulk.series("AAPL").ema(5, period)
+        reference = serial.series("AAPL").ema(5, period)
+        assert fast.value == pytest.approx(reference.value)
+        assert fast.prev == pytest.approx(reference.prev)
+
+
+def test_seed_session_bars_rejects_duplicate_and_malformed_timestamps():
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    bar = _bar("AAPL", 100.0, "2024-01-02 10:00")
+    with pytest.raises(ValueError, match="unique timestamps"):
+        scanner.seed_session_bars([bar, dict(bar)])
+    with pytest.raises((TypeError, ValueError)):
+        scanner.seed_session_bars([bar | {"timestamp": "not-a-time"}])
+
+
+def test_restart_gap_does_not_turn_partial_five_minute_candle_into_trend(tmp_path):
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    store = CustomSetupStore(tmp_path / "custom", defaults=tmp_path / "none.json")
+    store.save({
+        "id": "trend", "name": "Trend", "enabled": True, "mode": "or",
+        "direction": "long", "sessions": ["rth"],
+        "triggers": [{"id": "consec_candles", "options": ["green"],
+                      "params": {"count": 3, "tf": 5}}],
+    })
+    custom_sink = AlertSink()
+    scanner.attach_custom(CustomEvaluator(store), custom_sink)
+    for minute in range(12):
+        bar = _bar("AAPL", 100 + minute * 0.01, f"2024-01-02 09:{minute + 30:02d}")
+        bar["open"] = bar["close"] - 0.01
+        assert scanner.seed_session_bar(bar)
+    # Warmup had only 09:40 and 09:41 in that slot. Stream resumes at 09:48.
+    scanner._on_bar(_bar("AAPL", 99.5, "2024-01-02 09:48"))
+    assert len(custom_sink) == 0
+    assert scanner.series("AAPL").completed[5] is False
+
+
 def test_seed_session_bar_primes_gap_state_without_emitting(tmp_path):
     scanner, _, _ = _make_scanner()
     _warmup(scanner)
@@ -251,6 +450,51 @@ def test_seed_session_bar_primes_gap_state_without_emitting(tmp_path):
 
     scanner._on_bar(_bar("AAPL", gap_price, "2024-01-02 12:00"))
     assert len(custom_sink) == 0
+
+
+def test_prime_stream_bar_routes_references_and_never_emits(tmp_path):
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    store = CustomSetupStore(tmp_path / "custom", defaults=tmp_path / "none.json")
+    store.save({
+        "id": "hod", "name": "New HOD", "enabled": True, "mode": "or",
+        "direction": "long", "sessions": ["rth"],
+        "triggers": [{"id": "hod", "options": ["high"], "params": {}}],
+    })
+    sink = AlertSink()
+    scanner.attach_custom(CustomEvaluator(store), sink)
+
+    assert scanner.prime_stream_bar(_spy_bar(450.0, "2024-01-02 10:00"))
+    assert scanner.prime_stream_bar(_bar("AAPL", 100.0, "2024-01-02 10:00"))
+
+    assert scanner._latest_spy_bar["close"] == 450.0
+    assert scanner._states["AAPL"].high_of_day == pytest.approx(100.05)
+    assert len(sink) == 0
+
+
+def test_reconnect_snapshot_and_gap_rebaseline_before_next_live_alert(tmp_path):
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    store = CustomSetupStore(tmp_path / "custom", defaults=tmp_path / "none.json")
+    store.save({
+        "id": "hod", "name": "New HOD", "enabled": True, "mode": "or",
+        "direction": "long", "sessions": ["rth"],
+        "triggers": [{"id": "hod", "options": ["high"], "params": {}}],
+    })
+    sink = AlertSink()
+    scanner.attach_custom(CustomEvaluator(store), sink)
+    scanner.guard_live_continuity()
+
+    baseline = _bar("AAPL", 100.0, "2024-01-02 10:00")
+    scanner.prime_stream_bar(baseline)
+    scanner._on_bar(dict(baseline) | {"high": 110.0, "close": 110.0})
+    assert len(sink) == 0  # duplicate subscription/reconnect snapshot
+
+    scanner._on_bar(_bar("AAPL", 105.0, "2024-01-02 10:05"))
+    assert len(sink) == 0  # first observation after the disconnect is baseline
+
+    scanner._on_bar(_bar("AAPL", 106.0, "2024-01-02 10:06"))
+    assert len(sink) == 1  # first genuine post-readiness transition
 
 
 # ── SPY bar routing ───────────────────────────────────────────────────────────

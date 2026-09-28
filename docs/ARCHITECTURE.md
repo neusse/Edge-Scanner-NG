@@ -28,6 +28,8 @@ minute-bar subscription.
 Provider-specific code normalizes Alpaca or Schwab data behind the `DataFeed`
 interface. Each completed minute bar advances `LiveScanner` and its per-symbol
 state. Indicators and session levels update before enabled setup evaluators run.
+Derived multi-minute candles are eligible for completed-candle patterns only
+when every source minute in that interval is present; restart gaps fail closed.
 An `AlertSink` applies repeat/cooldown acceptance; the unified `FeedHub` then
 archives accepted alerts and fans them out to matching WebSocket subscribers.
 
@@ -49,6 +51,9 @@ those same code paths.
 Important implementation entry points:
 
 - `scripts/run_live.py` — startup, history seeding, API launch, and live connection
+- `scanner/startup_stream.py` — lossless handoff from the one early Schwab stream to warmed scanner state; overlap is deduplicated and synchronization bars cannot emit alerts
+- `scanner/schwab_screener.py` and `scanner/discovery_sessions.py` — normalized observe-only discovery, active-session recovery, and bounded finalized-session retention
+- `scanner/dynamic_universe.py` and `scanner/dynamic_readiness.py` — manual one-stream admission/release, additive protection reasons, service-specific acknowledgement, reconnect epochs and recovery audit, live-bar buffering, cache-first warmup, and fail-closed per-setup readiness
 - `scanner/data/interface.py` — provider contract
 - `scanner/data/alpaca.py` and `scanner/data/schwab.py` — provider adapters
 - `scanner/live_scanner.py` and `scanner/state.py` — minute-bar processing and symbol state

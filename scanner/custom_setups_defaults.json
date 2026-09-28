@@ -1033,7 +1033,7 @@
     },
     {
       "id": "cs_candidate_failed_break",
-      "name": "Failed Swing Break (Draft)",
+      "name": "Failed Swing Break",
       "color": "#ab47bc",
       "enabled": true,
       "mode": "or",
@@ -1048,27 +1048,31 @@
       "size_hint": "half",
       "triggers": [
         {
-          "id": "reject_last_high",
+          "id": "failed_swing_high",
           "options": [
             "5"
           ],
           "params": {
-            "lookback": 20
+            "lookback": 20,
+            "max_wait": 3,
+            "min_break_pct": 0.1
           },
           "repeat_sec": 0
         },
         {
-          "id": "reject_last_low",
+          "id": "failed_swing_low",
           "options": [
             "5"
           ],
           "params": {
-            "lookback": 20
+            "lookback": 20,
+            "max_wait": 3,
+            "min_break_pct": 0.1
           },
           "repeat_sec": 0
         }
       ],
-      "notes": "Configuration-only failed-break proxy. A completed 5-minute candle pokes beyond the prior 20-candle swing level, closes back inside it, and has RVOL at least 1.5x. This is an honest same-candle rejection; the catalog cannot require an earlier bar to break the same stored level before the failure.",
+      "notes": "A completed 5-minute candle closes at least 0.1% beyond the prior 20-candle high or low, freezing that level. A later completed candle must close back inside the same level within 3 candles. RVOL must be at least 1.5x; only after 09:45 ET. A one-candle wick/rejection does not qualify.",
       "universe_profile": "up_liquid_movers",
       "parameters": [
         {
@@ -1087,10 +1091,7 @@
         }
       ],
       "parameter_set": "",
-      "pending_filters": [
-        "ordered multi-bar break-failure-return state",
-        "persistent named breakout level"
-      ],
+      "pending_filters": [],
       "source": "sample"
     },
     {

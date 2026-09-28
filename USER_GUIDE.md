@@ -211,8 +211,19 @@ of daily history; extra flags are passed through, for example `./start_scanner.s
 2. **Sector map**: maps symbols to their sector ETFs (refreshed weekly).
 3. **Daily history**: reuses or incrementally updates the daily bar cache.
 4. **Intraday history**: reuses or incrementally updates the 5-minute bar cache used for relative volume.
-5. **Warmup**: seeds every symbol's state from that history.
-6. **Live stream**: opens **one** Alpaca market-data WebSocket and starts scanning 1-minute bars.
+5. **Warmup**: seeds every symbol's state from that history. Today's VWAP and EMA series are calculated
+   in batches with Pandas TA Classic, then replayed through the normal state machine.
+6. **Live stream**: with Schwab, the application's **one** WebSocket starts as soon as the universe and
+   sector support symbols are known, before history refresh and state seeding. Incoming bars are buffered,
+   reconciled chronologically after the REST snapshot, and treated
+   as synchronization—not alerts. Edge arms alert and trade triggers only after the buffer drains without
+   loss. Other providers connect after warmup through the same scanner interface.
+
+The terminal reports total state-seed time and the five slowest symbols. A failure names the affected
+symbol, removes that incomplete symbol from live evaluation, and continues warming the rest. Edge refuses
+to arm if the startup buffer overflows; it never silently trades across a known startup data gap.
+The network-free regression benchmark is `python scripts/benchmark_startup.py`; its default workload is
+256 symbols by 300 current-session bars with a 30-second budget.
 
 When it is live, open **http://localhost:7777** in a browser (it redirects to the dashboard at `/v2/`).
 
@@ -254,6 +265,7 @@ while dragging to turn off snapping.
 | **Bid / Ask** | Linked-symbol bid and ask history with a spread panel. Gaps mark stale or invalid quotes; see the [live quote contract](docs/QUOTE_FEED.md) for timing and quality rules |
 | **Rankings** | Ranked lists: RVOL leaders, gainers and losers (from the close or the open), 5-minute movers, premarket gainers, losers and volume, and a new high / low of day stream |
 | **Screener** | Yahoo Finance presets or custom price, change, volume and market-cap filters. Results are discovery candidates that can be saved to watchlists |
+| **Schwab Market Screener** | Live and retained Schwab `SCREENER_EQUITY` rankings from the scanner's existing WebSocket. Shows provider health, receipt age, and candidates outside the live universe; discovery remains separate from live scanning |
 | **News** | Market-wide news, or news for the linked symbol |
 | **Stock Info** | Live per-symbol state plus company fundamentals. The Schwab feed adds the full Instruments fundamental record, grouped into valuation, profitability, growth, financial health, dividends and trading statistics |
 | **Watchlist** | Editable symbol lists with live columns |
@@ -261,6 +273,84 @@ while dragging to turn off snapping.
 | **Setup check** | For one symbol, what every setup did over the last few minutes and which condition passed or failed. Use it to answer "why did (or didn't) this alert fire?" |
 
 ### Screener, watchlists and the scanner universe
+
+Use **+ Add Window → Schwab Market Screener** to watch Schwab's live whole-market discovery feed. A
+row labelled **Candidate** is outside the live universe; **Live universe** means Edge already maintains
+scanner state for it. Discovery alone cannot create alerts or change the universe. Its provenance and receipt-age strip make it clear whether the provider snapshot is live,
+waiting, disconnected, or rejected. The existing **5-Min Movers** ranking remains limited to the symbols
+Edge is actively scanning.
+
+The window opens in **Combined** view. Repeated symbols from several Schwab lists are merged into one
+candidate with list count, best/current rank, first/last seen time, and recurrence. Use the view menu to
+inspect a single provider list. Open the window settings to build lists from a supported market or index,
+measure, and period (all day, 1, 5, 10, 30, or 60 minutes). Seven long-oriented percent-change-up,
+volume, trades, and average-percent-volume lists are active by default. List selection is session-wide;
+each list keeps its own health and error state, so a rejected list does not hide healthy results.
+Columns prefixed **Schwab** are raw discovery values from the provider, not Edge-calculated indicators.
+Changing these settings changes only `SCREENER_EQUITY` subscriptions on the existing connection.
+
+For a current outside-universe candidate, **Admit** requests one Chart Equity slot and one Level One
+slot on that same connection. The toolbar previews the separate capacities and preserves five unused
+Chart slots by default (`SCHWAB_CHART_HEADROOM`). An admission is refused before sending if either
+budget is unavailable. Sent requests remain **requested** until Schwab acknowledges each service;
+Edge does not treat a successful send as acceptance.
+
+After both acknowledgements, the row moves through **acknowledged** and **warming**. Edge buffers the
+new live bars, reuses the daily and 5-minute caches, requests only missing cached coverage through the
+shared Schwab rate limiter, obtains the current session once, and merges by market timestamp. A current-
+connection stream bar wins any overlap and material disagreements are recorded. Missing RTH minutes or
+history failures leave the candidate **failed** with a visible reason and retry cooldown. A **ready**
+candidate can be opened through the normal linked chart workflow and enters applicable live rankings.
+
+Ready does not make every configured setup available automatically. Edge evaluates daily history,
+5-minute history, current-session continuity, sector context, Level One quote presence, configured
+indicators, universe membership, and each enabled setup's own requirements. The Admission badge shows
+the number of ready setups; hover it for unavailable or filtered setups and their reasons. For example,
+a 60-session breakout remains unavailable when only 20 completed sessions exist, while a New HOD setup
+can still be ready. Missing inputs never receive invented defaults.
+
+Only the ready setup IDs enter evaluation. Requested, partially acknowledged, warming, failed,
+retry-cooldown, stale-epoch, and gap-synchronization states cannot publish alerts. If a time-dependent
+input becomes available later—such as a completed opening range—the readiness list updates on a later
+completed minute without restarting or resetting existing symbols. Admission is session-only and never
+rewrites the saved watchlist chosen for the next scanner start.
+
+A ready dynamic row also has **Pin**, **Hold**, and **Release** controls. Pin is an explicit operator pin;
+Hold is a temporary session hold. Protection reasons are additive, so removing a Pin does not remove a
+Hold or any other protection. Required reference symbols, external quote watches, symbols still warming,
+and the first 30 minutes after readiness are protected too. An external quote watch is labelled exactly
+that—it is not described as an open position.
+
+Release is enabled only when no protection remains. Edge first disables setup evaluation and removes the
+symbol from live rankings, then requests separate Chart Equity and Level One `UNSUBS` operations on the
+existing WebSocket. The row shows the two acknowledgement states independently; unrelated subscriptions
+continue untouched. Chart/session evidence remains available for review. Re-admitting a released symbol
+creates a new lease and readiness epoch, with fresh trigger latches and candle state.
+
+If the Schwab stream disconnects, every active dynamic lease immediately enters **reconnecting** (or
+**release reconnecting**) under a new epoch and its setup evaluation stays disabled. On the replacement
+connection Edge reasserts the desired Chart and Level One services independently, waits for fresh
+acknowledgements, and repeats warmup/readiness certification before alerts resume. A release interrupted
+by reconnect remains a release; it cannot accidentally turn back into an admission.
+
+The window's capacity strip shows independent Chart and Level One health plus the connection epoch. A
+provider limit reduction blocks admissions and displays the deficit. Protected desired membership is not
+silently evicted to make the numbers fit; the degraded state remains visible for operator action. Hover an
+Admission badge to see recent bounded audit events such as rejection, reconnect invalidation, restored
+membership, and readiness confirmation.
+
+Edge retains the last 20 finalized discovery sessions by default. Use **Current session** at the top of
+the window for live results, or choose a dated session after the close. Select candidates and choose
+**Save selected** to create a named/described watchlist, add to an existing list, or replace one. The
+saved list records the capture time, session date/status, and contributing Schwab discovery lists.
+Saving is deliberately inert: it does not subscribe a symbol, change the running scanner, or select the
+watchlist as the next startup universe. That remains a separate action in Watchlist settings.
+
+Finalized sessions are stored in `data/schwab_discovery/sessions.jsonl`; an in-progress session uses the
+adjacent atomic `sessions.active.json` recovery file. Set `SCHWAB_DISCOVERY_RETENTION` to keep between 1
+and 100 sessions, or `SCHWAB_DISCOVERY_PATH` to place the final JSONL elsewhere. A session is finalized
+at the normal market-close stream stop. If Edge was interrupted, the active session is recovered and
+finalized when the next trading date begins.
 
 The Screener finds candidates without adding them to the live Schwab stream. Choose a Yahoo preset or
 custom filters, press **Refresh**, select the rows you want (or leave all rows unselected to use every
@@ -575,6 +665,7 @@ Everything the scanner writes lives under `data/` (gitignored).
 | `data/layouts/` | Dashboard screens |
 | `data/watchlists.json` | Watchlists |
 | `data/universe_selection.json` | The one watchlist selected as the scanner universe for the next start |
+| `data/schwab_discovery/` | Active and bounded finalized Schwab discovery sessions |
 
 Alert files older than 5 days are deleted at startup (change with `--keep-days`). Copy them elsewhere if
 you want a longer history.

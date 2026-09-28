@@ -12,6 +12,29 @@ only when `data/setups/custom/` is empty; they never overwrite existing saved se
 The live Config window may therefore differ. These are *watch alerts*, not trade
 recommendations or orders.
 
+## Which candle makes an alert eligible?
+
+Edge receives completed **one-minute** bars. A setup can use a different clock for
+its trigger: a structural pattern such as Trend or Failed Swing Break uses
+**completed five-minute** candles, while a fast warning such as Exit Trade Watch
+uses a **completed one-minute** price crossing the five-minute EMA9. The latter is
+a watch observation, not a protective stop or an order. Trader must manage any
+position and its protective stop independently.
+
+Every minute of a multi-minute candle must be present before Edge can use that
+candle for a completed-candle trigger. For example, the 12:10–12:14 five-minute
+candle first becomes eligible when the 12:15 minute arrives. If a restart leaves
+12:12–12:14 missing, the partial candle cannot confirm Trend. A later complete
+candle does not bridge that gap into a consecutive-candle streak. The chart may
+show a developing current candle, but that is not a closed-candle signal.
+
+An alert's `source_bar` identifies the latest one-minute input evaluated, not
+necessarily the timeframe or timestamp of every trigger in a combined setup.
+Use the setup's trigger settings and `trigger_evidence` to understand that
+relationship. A mixed-clock Momentum Watch can combine three-minute,
+five-minute and one-minute events; it remains a watch, not an entry instruction.
+The live Config window is the source of truth for thresholds and enabled state.
+
 ## Momentum Watch
 
 **Momentum Watch** is a long-side, regular-session watch alert. It requires at least **two** of
@@ -91,7 +114,7 @@ and [trigger contracts](TRIGGER_CONTRACTS.md) for calculation and timing details
 | EMA Cross | Yes | Intraday EMA(3) crossing EMA(9), subject to volume, strength and other gates. |
 | Episodic Pivot Structure (Draft) | Yes | Gap, early 15-minute ORB and high RVOL; **does not verify an earnings/news catalyst**. |
 | Exit Trade Watch | Yes | Long-position warning when price crosses below the five-minute EMA9; it does not manage an order. |
-| Failed Swing Break (Draft) | Yes | Same-candle rejection of a recent swing level; **not** a fully ordered break-then-fail sequence. |
+| Failed Swing Break | Yes | A 5-minute candle must close at least 0.1% beyond the prior 20-candle swing level, then a later completed 5-minute candle must close back inside that **same frozen level** within three candles. Requires 1.5× time-of-day RVOL and time after 09:45 ET. The prior one-candle rejection proxy is no longer used; `Reject last high` and `Reject last low` remain separate triggers. |
 | HOD Breakout | Yes | Strong new high with multiple timeframe breaks, volume spike and green-candle streak. |
 | Key Level Cross | Yes | Cross of daily SMA50/SMA200 or prior-day high/low with volume. |
 | LOD Breakdown | No | Short-side mirror of HOD Breakout. |

@@ -33,3 +33,24 @@ _Avoid_: Compression
 
 **Compression**:
 A pattern in which price movement contracts over time, usually accompanied by declining participation before any expansion. A single narrow range is insufficient to establish it.
+
+**Discovery list**:
+A provider-ranked list of stocks that may deserve attention. Discovery is observation only and does not grant live market-data coverage.
+_Avoid_: Universe, watchlist (unless the rows have actually been saved)
+
+**Candidate**:
+A symbol observed through discovery but not necessarily present in the live universe. A candidate cannot produce setups or alerts until separately admitted to the live universe.
+_Avoid_: Scanner symbol, alert
+
+**Live universe**:
+The bounded set of symbols for which Edge maintains scanner state and evaluates setups. Provider discovery rows outside this set remain candidates.
+_Avoid_: Screener results, entire market
+
+**Manual admission**:
+An operator request to add one current discovery candidate to Chart Equity and Level One on Edge's existing Schwab connection, then warm its chart state. Admission is not a setup, alert, or trade decision.
+
+**Readiness**:
+The explicit state reached after provider acknowledgements, cache-first history inspection, live-bar buffering, and a gap-checked merge. Chart readiness and setup readiness remain separate: each enabled setup must prove its daily, intraday, session, sector, quote, and indicator inputs before it can evaluate the promoted symbol.
+
+**Setup availability**:
+The per-symbol, per-setup result of the readiness gate: `ready`, `unavailable` because required input is missing, or `filtered` because the symbol does not belong to that setup's universe profile. Only `ready` setup IDs may publish observations.

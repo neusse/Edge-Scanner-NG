@@ -5,6 +5,7 @@ import { ChartWindow, ChartSettings } from './chart/ChartWindow'
 import { QuotesWindow } from './quotes/QuotesWindow'
 import { ToplistWindow, ToplistSettings } from './toplist/ToplistWindow'
 import { ScreenerWindow, ScreenerSettings } from './screener/ScreenerWindow'
+import { SchwabScreenerWindow, SchwabScreenerSettings } from './schwabscreener/SchwabScreenerWindow'
 import { TOPLIST_LABEL } from './defaults'
 import { NewsWindow, NewsSettings } from './news/NewsWindow'
 import { StockInfoWindow } from './stockinfo/StockInfoWindow'
@@ -52,6 +53,11 @@ export const WINDOW_REGISTRY: Record<WindowType, WindowDef> = {
     component: ScreenerWindow as unknown as WindowDef['component'],
     settings: ScreenerSettings as unknown as WindowDef['settings'],
     subtitle: w => ({ text: (w as { mode: string }).mode === 'custom' ? 'custom' : 'Yahoo' }),
+  },
+  schwabscreener: {
+    component: SchwabScreenerWindow as unknown as WindowDef['component'],
+    settings: SchwabScreenerSettings as unknown as WindowDef['settings'],
+    subtitle: w => ({ text: (w as { view?: string }).view === 'list' ? 'one provider list' : 'combined candidates' }),
   },
   news: {
     component: NewsWindow as unknown as WindowDef['component'],

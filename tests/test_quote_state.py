@@ -18,7 +18,11 @@ def test_quote_only_sparse_updates_keep_each_side_market_time():
     assert row["bid_market_ms"] == T and row["ask_market_ms"] == T + 100
     assert row["last_market_ms"] == T and row["bid_size"] == 4
     assert row["spread_bps"] > 0
-    assert book.get("AMD", now_ms=T + 2200)["quality"] == "stale"
+    book.stream_activity(receipt_ms=T + 2100)  # another message on the same live stream
+    assert book.get("AMD", now_ms=T + 2200)["quality"] == "valid"
+    book.stream_activity(receipt_ms=T + 19_900)
+    assert book.get("AMD", now_ms=T + 20_000)["quality"] == "valid"
+    assert book.get("AMD", now_ms=T + 22_000)["quality"] == "stale"
 
 
 def test_missing_invalid_locked_crossed_delayed_out_of_order():
@@ -81,4 +85,19 @@ def test_disconnect_and_next_session_never_reuse_old_quote_as_valid():
     assert book.get("AMD", now_ms=T + 86_400_000)["quality"] != "valid"
     row = book.ingest("AMD", {"ask": (100.03, T + 86_400_000, 1)},
                       receipt_ms=T + 86_400_010, delayed=False)
-    assert row["quality"] == "stale"  # yesterday's bid is still yesterday's bid
+    assert row["quality"] == "unavailable"  # yesterday's bid was not re-established after reconnect
+    row = book.ingest("AMD", {"bid": (100.01, T + 86_400_100, 1)},
+                      receipt_ms=T + 86_400_110, delayed=False)
+    assert row["quality"] == "valid"
+
+
+def test_reconnect_does_not_rebaseline_a_carried_forward_price_from_size_only_delta():
+    book = QuoteBook(stale_after_ms=2000)
+    book.ingest("AMD", {"bid": (100, T, 1), "ask": (100.02, T, 1)},
+                receipt_ms=T + 10, delayed=False)
+    book.connection(False)
+    book.connection(True)
+    row = book.ingest("AMD", {"bid": (None, None, 2),
+                              "ask": (100.03, T + 1000, 1)},
+                      receipt_ms=T + 1010, delayed=False)
+    assert row["quality"] == "unavailable"

@@ -139,7 +139,9 @@ class WatchlistStore:
             "updatedAt": str(wl.get("updatedAt") or ""),
         }
         for key, limit in (("source", 32), ("sourceLabel", 120), ("sourceProfileId", 64),
-                           ("sourceProfileHash", 40), ("capturedAt", 64)):
+                           ("sourceProfileHash", 40), ("capturedAt", 64),
+                           ("sourceSessionDate", 16), ("sourceSessionStatus", 16),
+                           ("sourceListKeys", 800)):
             value = str(wl.get(key) or "").strip()[:limit]
             if value:
                 rec[key] = value

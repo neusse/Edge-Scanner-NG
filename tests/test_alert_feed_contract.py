@@ -10,8 +10,11 @@ from jsonschema import Draft202012Validator, FormatChecker
 from starlette.websockets import WebSocketDisconnect
 
 from scanner.api import AppState, create_app
+from scanner.alert_sink import AlertSink
+from scanner.custom_setups import CustomEvaluator, CustomSetupStore
 from scanner.feed_hub import FeedHub, Subscription
 from tests.test_api_v2 import FakeScanner, _states
+from tests.test_live_scanner import _bar, _make_scanner, _warmup
 
 
 SCHEMA = json.loads((Path(__file__).parent.parent / "docs/schemas/alert-feed-v1.schema.json").read_text())
@@ -121,3 +124,25 @@ def test_invalid_archive_write_is_visible_and_not_recoverable(tmp_path, monkeypa
     assert alert["archive_write_ok"] is False
     with pytest.raises(LookupError):
         hub.recover_for(Subscription(), alert["event_id"])
+
+
+def test_startup_and_reconnect_synchronization_never_reaches_alert_feed(tmp_path):
+    scanner, _, _ = _make_scanner()
+    _warmup(scanner)
+    store = CustomSetupStore(tmp_path / "setups", defaults=tmp_path / "none.json")
+    store.save({
+        "id": "hod", "name": "New HOD", "enabled": True, "mode": "or",
+        "direction": "long", "sessions": ["rth"],
+        "triggers": [{"id": "hod", "options": ["high"], "params": {}}],
+    })
+    hub = FeedHub(store_dir=tmp_path / "alerts")
+    scanner.attach_custom(CustomEvaluator(store), hub.tap(AlertSink(), "custom"))
+    scanner.guard_live_continuity()
+
+    scanner.prime_stream_bar(_bar("AAPL", 100.0, "2024-01-02 10:00"))
+    scanner._on_bar(_bar("AAPL", 105.0, "2024-01-02 10:05"))
+    assert hub.published == 0
+
+    scanner._on_bar(_bar("AAPL", 106.0, "2024-01-02 10:06"))
+    assert hub.published == 1
+    assert hub.recent[-1]["mode"] == "live"

@@ -17,11 +17,14 @@ from fastapi.testclient import TestClient
 from scanner.api import AppState, create_app
 from scanner.api_v2 import clean, price_of, session_now
 from scanner.events import EventBuffer, make_hodlod_hook
+from scanner.discovery_sessions import DiscoverySessionStore
 from scanner.fundamentals import FundamentalsCache
 from scanner.json_store import LayoutStore, UniverseSelectionStore, WatchlistStore, normalize_symbols
 from scanner.news import NewsClient
 from scanner.state import SymbolState
 from scanner.toplists import ToplistEngine, build_rows
+from scanner.schwab_screener import SchwabScreenerBook
+from scanner.startup_stream import StartupBarBuffer
 from tests.helpers import _daily, _feed, _state
 
 
@@ -88,6 +91,140 @@ def test_create_app_exposes_v2_routes():
     c = TestClient(create_app(app_state))
     assert c.get("/api/v2/clock").status_code == 200
     assert c.get("/api/v2/toplists/rvol").status_code == 200
+
+
+def test_feed_status_exposes_startup_buffer_readiness():
+    app_state = AppState(scanner=FakeScanner(_states()), feed=None)  # type: ignore[arg-type]
+    app_state.startup_buffer = StartupBarBuffer()
+    payload = TestClient(create_app(app_state)).get("/api/feed/status").json()
+    assert payload["startup"] == {
+        "phase": "buffering", "ready": False, "buffered_events": 0,
+        "oldest_buffered_timestamp": None, "dropped_events": 0,
+    }
+
+
+def test_schwab_screener_marks_candidates_without_creating_scanner_state(tmp_path: Path):
+    book = SchwabScreenerBook()
+    book.connection(True)
+    book.ingest({"data": [{"service": "SCREENER_EQUITY", "content": [{
+        "key": "EQUITY_ALL_PERCENT_CHANGE_UP_5", "1": 1_798_000_000_000,
+        "4": [{"symbol": "OUT", "lastPrice": 9.5}, {"symbol": "AAA", "lastPrice": 105}],
+    }]}]})
+    scanner = FakeScanner(_states())
+    class Feed:
+        screener_book = book
+        configured = None
+        admitted = None
+        controller = None
+        def watch_screeners(self, keys):
+            self.configured = keys
+            book.requested(keys)
+            return book.snapshot()
+        def set_dynamic_controller(self, controller): self.controller = controller
+        def dynamic_capacity(self):
+            return {"chart": {"used": 280, "cap": 300, "headroom": 5, "available": 15},
+                    "level_one": {"used": 280, "cap": 3000, "headroom": 0, "available": 2720}}
+        def request_dynamic_membership(self, symbol): self.admitted = symbol
+    feed = Feed()
+    app_state = AppState(scanner=scanner, feed=feed)
+    from fastapi import FastAPI
+    from scanner.api_v2 import register_v2_routes
+    app = FastAPI()
+    register_v2_routes(app, app_state, layouts_dir=tmp_path / "layouts", watchlists_path=tmp_path / "wl.json",
+                       universe_selection_path=tmp_path / "selection.json", fundamentals_path=tmp_path / "fund.json",
+                       universe_csv=tmp_path / "none.csv", sector_csv=tmp_path / "none2.csv")
+    payload = TestClient(app).get("/api/v2/screener/schwab").json()
+    assert [(r["symbol"], r["in_live_universe"]) for r in payload["rows"]] == [("OUT", False), ("AAA", True)]
+    assert "OUT" not in scanner._states
+    catalog = TestClient(app).get("/api/v2/screener/schwab/catalog").json()
+    assert "EQUITY_ALL_PERCENT_CHANGE_UP_5" in catalog["defaults"]
+    configured = TestClient(app).put("/api/v2/screener/schwab/subscriptions",
+        json={"keys": ["NASDAQ_TRADES_5", "EQUITY_ALL_VOLUME_5"]})
+    assert configured.status_code == 200 and feed.configured == ["NASDAQ_TRADES_5", "EQUITY_ALL_VOLUME_5"]
+    invalid = TestClient(app).put("/api/v2/screener/schwab/subscriptions", json={"keys": ["BAD"]})
+    assert invalid.status_code == 400
+    admitted = TestClient(app).post("/api/v2/screener/schwab/admit/OUT")
+    assert admitted.status_code == 200
+    assert admitted.json()["state"] == "requested" and feed.admitted == "OUT"
+    pinned = TestClient(app).put("/api/v2/screener/schwab/membership/OUT/protection",
+                                 json={"reason": "manual", "enabled": True})
+    assert pinned.status_code == 200
+    assert {item["code"] for item in pinned.json()["protections"]} == {"manual", "warming"}
+    refused = TestClient(app).post("/api/v2/screener/schwab/release/OUT")
+    assert refused.status_code == 409 and "protected" in refused.json()["error"]
+    assert "OUT" not in scanner._states
+    already_live = TestClient(app).post("/api/v2/screener/schwab/admit/AAA")
+    assert already_live.status_code == 409
+
+
+def test_schwab_discovery_sessions_save_selected_candidates_without_selecting_universe(tmp_path: Path):
+    store = DiscoverySessionStore(tmp_path / "discovery" / "sessions.jsonl")
+    book = SchwabScreenerBook(clock=lambda: 1_798_000_000.0, session_store=store)
+    book.requested(["EQUITY_ALL_PERCENT_CHANGE_UP_5"])
+    book.connection(True)
+    book.ingest({"data": [{"service": "SCREENER_EQUITY", "content": [{
+        "key": "EQUITY_ALL_PERCENT_CHANGE_UP_5", "1": 1_798_000_000_000,
+        "4": [{"symbol": "OUT", "lastPrice": 9.5}, {"symbol": "AAA", "lastPrice": 105}],
+    }]}]})
+    final = book.finalize("market_close")
+    assert final is not None
+
+    class Feed:
+        screener_book = book
+
+    scanner = FakeScanner(_states())
+    app_state = AppState(scanner=scanner, feed=Feed())
+    from fastapi import FastAPI
+    from scanner.api_v2 import register_v2_routes
+    app = FastAPI()
+    state = register_v2_routes(
+        app, app_state, layouts_dir=tmp_path / "layouts",
+        watchlists_path=tmp_path / "watchlists.json",
+        universe_selection_path=tmp_path / "selection.json",
+        fundamentals_path=tmp_path / "fund.json",
+        universe_csv=tmp_path / "none.csv", sector_csv=tmp_path / "none2.csv",
+    )
+    state.watchlists.save({"id": "startup", "name": "Startup", "symbols": ["AAA"],
+                           "updatedAt": "2026-09-25T12:00:00Z"})
+    state.universe_selection.save("startup")
+    c = TestClient(app)
+
+    sessions = c.get("/api/v2/screener/schwab/sessions")
+    assert sessions.status_code == 200
+    assert sessions.json()["sessions"][0]["session_date"] == final["session_date"]
+    retained = c.get(f"/api/v2/screener/schwab/sessions/{final['session_date']}")
+    assert [row["symbol"] for row in retained.json()["candidates"]] == ["OUT", "AAA"]
+
+    saved = c.put("/api/v2/screener/schwab/watchlists/after-close", json={
+        "session_date": final["session_date"], "symbols": ["OUT"],
+        "name": "After-close candidates", "description": "Review tomorrow",
+        "mode": "replace",
+    })
+    assert saved.status_code == 200
+    watchlist = saved.json()["watchlist"]
+    assert watchlist["symbols"] == ["OUT"]
+    assert watchlist["source"] == "schwab_screener"
+    assert watchlist["sourceSessionDate"] == final["session_date"]
+    assert watchlist["sourceSessionStatus"] == "final"
+    assert watchlist["sourceListKeys"] == "EQUITY_ALL_PERCENT_CHANGE_UP_5"
+    decided = c.get(f"/api/v2/screener/schwab/sessions/{final['session_date']}").json()
+    out = next(row for row in decided["candidates"] if row["symbol"] == "OUT")
+    assert out["membership_decisions"][0]["action"] == "save_watchlist"
+    assert out["membership_decisions"][0]["watchlist_id"] == "after-close"
+    assert state.universe_selection.load() == "startup"
+    assert set(scanner._states) == {"AAA", "BBB", "CCC"}
+
+    appended = c.put("/api/v2/screener/schwab/watchlists/startup", json={
+        "session_date": final["session_date"], "symbols": ["OUT"], "mode": "append",
+    })
+    assert appended.status_code == 200
+    assert appended.json()["watchlist"]["symbols"] == ["AAA", "OUT"]
+    assert state.universe_selection.load() == "startup"
+
+    invalid = c.put("/api/v2/screener/schwab/watchlists/nope", json={
+        "session_date": final["session_date"], "symbols": ["NOT_IN_SESSION"],
+    })
+    assert invalid.status_code == 400
 
 
 class _Resp:

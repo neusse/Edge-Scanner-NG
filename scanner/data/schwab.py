@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -214,12 +215,45 @@ class SchwabFeed(DataFeed):
         self.polled_symbols: list[str] = []           # bars built from polled quotes
         self.quote_bars = None                        # the QuoteBarBuilder, once streaming
         from scanner.quote_state import QuoteBook
+        from scanner.schwab_screener import SchwabScreenerBook
         self.quote_book = QuoteBook()
+        from scanner.discovery_sessions import DiscoverySessionStore
+        try:
+            discovery_retention = int(os.environ.get("SCHWAB_DISCOVERY_RETENTION", "20"))
+        except ValueError:
+            discovery_retention = 20
+        self.screener_book = SchwabScreenerBook(session_store=DiscoverySessionStore(
+            Path(os.environ.get("SCHWAB_DISCOVERY_PATH", "data/schwab_discovery/sessions.jsonl")),
+            retention_sessions=discovery_retention,
+        ))
         self.trade_callback = None  # set by LiveScanner before the single stream starts
         self.quote_covered_symbols: list[str] = []
         self._quote_lock = threading.RLock()
+        self._screener_lock = threading.RLock()
+        self._screener_keys: list[str] = []
         self._quote_base_symbols: set[str] = set()
         self._quote_watched_symbols: set[str] = set()
+        self._dynamic_lock = threading.RLock()
+        self._dynamic_memberships: dict[str, dict] = {}
+        self._dynamic_requests: dict[str, tuple[str, str, str]] = {}
+        self._dynamic_controller = None
+        self._dynamic_connection_epoch = 0
+        self._dynamic_connected = False
+        self._dynamic_ever_connected = False
+        self._dynamic_health = {
+            "CHART_EQUITY": {"status": "unavailable", "error": None},
+            "LEVELONE_EQUITIES": {"status": "unavailable", "error": None},
+        }
+        self._base_requests: dict[str, tuple[str, list[str]]] = {}
+        self._base_acknowledged = {"CHART_EQUITY": set(), "LEVELONE_EQUITIES": set()}
+        self._base_rejected = {"CHART_EQUITY": set(), "LEVELONE_EQUITIES": set()}
+        self._base_tracking = {"CHART_EQUITY": False, "LEVELONE_EQUITIES": False}
+        self._dynamic_caps = {"CHART_EQUITY": self.CHART_EQUITY_CAP,
+                              "LEVELONE_EQUITIES": self.LEVELONE_CAP}
+        try:
+            self._dynamic_chart_headroom = max(0, int(os.environ.get("SCHWAB_CHART_HEADROOM", "5")))
+        except ValueError:
+            self._dynamic_chart_headroom = 5
 
     # ── Candle parsing ────────────────────────────────────────────────────────
 
@@ -305,6 +339,10 @@ class SchwabFeed(DataFeed):
 
     def get_historical_daily(self, symbol: str, start: date, end: date) -> pd.DataFrame:
         return self._cached_history(symbol, "Day", start, end, self._cache_dir, self._asked_daily, "daily")
+
+    def history_stats(self) -> dict:
+        with self._stats_lock:
+            return json.loads(json.dumps(self._history_stats))
 
     def get_historical_bars(self, symbol: str, timeframe: Timeframe,
                             start: date, end: date) -> pd.DataFrame:
@@ -650,7 +688,15 @@ class SchwabFeed(DataFeed):
 
         def _emit(bar: dict) -> None:
             with emit_lock:
-                callback(bar)
+                controller = self._dynamic_controller
+                if controller is not None:
+                    epoch = controller.bar_epoch(str(bar.get("symbol") or ""))
+                    if epoch is not None:
+                        bar = {**bar, "_dynamic_epoch": epoch,
+                               "_connection_epoch": self._dynamic_connection_epoch}
+                consumed = bool(controller and controller.on_bar(bar))
+                if not consumed:
+                    callback(bar)
 
         synthetic = os.environ.get("SCHWAB_SYNTHETIC_BARS", "1").strip().lower() not in ("0", "false", "no", "off")
         cap = self.CHART_EQUITY_CAP
@@ -677,13 +723,23 @@ class SchwabFeed(DataFeed):
             builder.track(sym, grace=self.POLL_SECONDS + 5.0)
 
         def _receiver(raw) -> None:
+            self.quote_book.stream_activity()
+            self.screener_book.ingest(raw)
+            self._ingest_dynamic_responses(raw)
+            partial = self._ingest_base_responses(raw)
             chart_cap = self.parse_symbol_cap(raw, "CHART_EQUITY")
+            if chart_cap is not None:
+                with self._dynamic_lock:
+                    self._dynamic_caps["CHART_EQUITY"] = chart_cap
             if chart_cap is not None and chart_cap < len(self.streamed_symbols):
                 # Schwab accepted fewer real-bar symbols than expected: the overflow
                 # moves down a tier (or is reported, with synthetic bars off).
                 with tiers_lock:
-                    over = self.streamed_symbols[chart_cap:]
-                    self.streamed_symbols = self.streamed_symbols[:chart_cap]
+                    protected = set(getattr(self._dynamic_controller, "protected_symbols", lambda: set())())
+                    exact = partial.get("CHART_EQUITY", [])
+                    over = [sym for sym in (exact or self.streamed_symbols[chart_cap:]) if sym not in protected]
+                    kept_protected = [sym for sym in self.streamed_symbols[chart_cap:] if sym in protected]
+                    self.streamed_symbols = self.streamed_symbols[:chart_cap] + kept_protected
                     if synthetic:
                         for sym in over:
                             builder.track(sym, grace=self.POLL_SECONDS + 5.0)
@@ -692,11 +748,19 @@ class SchwabFeed(DataFeed):
                         self.unstreamed_symbols = over + self.unstreamed_symbols
                         self._warn_cap(chart_cap)
             quote_cap = self.parse_symbol_cap(raw, "LEVELONE_EQUITIES")
+            if quote_cap is not None:
+                with self._dynamic_lock:
+                    self._dynamic_caps["LEVELONE_EQUITIES"] = quote_cap
             if quote_cap is not None and quote_cap < len(self.quote_covered_symbols):
                 with tiers_lock:
                     with self._quote_lock:
-                        over_covered = self.quote_covered_symbols[quote_cap:]
-                        self.quote_covered_symbols = self.quote_covered_symbols[:quote_cap]
+                        protected = set(getattr(self._dynamic_controller, "protected_symbols", lambda: set())())
+                        exact = partial.get("LEVELONE_EQUITIES", [])
+                        over_covered = [sym for sym in (exact or self.quote_covered_symbols[quote_cap:])
+                                        if sym not in protected]
+                        kept_protected = [sym for sym in self.quote_covered_symbols[quote_cap:]
+                                          if sym in protected]
+                        self.quote_covered_symbols = self.quote_covered_symbols[:quote_cap] + kept_protected
                     for sym in over_covered:
                         self.quote_book.coverage(sym, "cap_exceeded")
                     over = [sym for sym in self.quote_streamed_symbols if sym not in self.quote_covered_symbols]
@@ -719,13 +783,23 @@ class SchwabFeed(DataFeed):
             self._warn_cap(cap)
 
         stream.start(receiver=_receiver, daemon=True)
+        from scanner.schwab_screener import DEFAULT_SCREENER_KEYS
+        with self._screener_lock:
+            self._screener_keys = list(DEFAULT_SCREENER_KEYS)
+        self.screener_book.requested(self._screener_keys)
+        self._send_screener_requests(stream, self._screener_keys, "0,1,2,3,4", "ADD")
         # Subscribe in chunks; Schwab caps the key list per request.
         _CHUNK = 250
         for i in range(0, len(self.streamed_symbols), _CHUNK):
-            stream.send(stream.chart_equity(self.streamed_symbols[i : i + _CHUNK], "0,1,2,3,4,5,6,7,8"))
+            keys = self.streamed_symbols[i : i + _CHUNK]
+            request = stream.chart_equity(keys, "0,1,2,3,4,5,6,7,8")
+            self._expect_base_request("CHART_EQUITY", keys, request)
+            stream.send(request)
         for i in range(0, len(self.quote_covered_symbols), _CHUNK):
-            stream.send(stream.level_one_equities(self.quote_covered_symbols[i : i + _CHUNK],
-                                                  "0,1,2,3,4,5,8,9,10,11,34,35,37,38"))
+            keys = self.quote_covered_symbols[i : i + _CHUNK]
+            request = stream.level_one_equities(keys, "0,1,2,3,4,5,8,9,10,11,34,35,37,38")
+            self._expect_base_request("LEVELONE_EQUITIES", keys, request)
+            stream.send(request)
         log.info("Schwab: %d symbols on real bars, %d on streamed quotes, %d on polled quotes",
                  len(self.streamed_symbols), len(self.quote_streamed_symbols), len(self.polled_symbols))
         if synthetic and rest:
@@ -779,7 +853,389 @@ class SchwabFeed(DataFeed):
             active = bool(getattr(stream, "active", False))
             if active != was_active:
                 self.quote_book.connection(active)
+                self.screener_book.connection(active)
+                self._dynamic_connection_changed(active)
                 was_active = active
+
+    def _send_screener_requests(self, stream, keys: list[str], fields: str, command: str) -> None:
+        """Send one request per list so acknowledgements retain list identity."""
+        for key in keys:
+            request = stream.screener_equity([key], fields, command=command)
+            if isinstance(request, dict):
+                self.screener_book.expect(request.get("requestid"), [key])
+            stream.send(request)
+
+    def _expect_base_request(self, service: str, keys: list[str], request) -> None:
+        request_id = self._request_id(request)
+        if request_id is None:
+            return
+        with self._dynamic_lock:
+            self._base_tracking[service] = True
+            self._base_requests[request_id] = (service, list(keys))
+            self._dynamic_health[service] = {"status": "restoring", "error": None}
+
+    def _ingest_base_responses(self, raw) -> dict[str, list[str]]:
+        """Resolve exact accepted/discarded members for initial subscription chunks."""
+        try:
+            message = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+        except (TypeError, ValueError):
+            return {}
+        rejected_by_service: dict[str, list[str]] = {}
+        for response in (message or {}).get("response", []) or []:
+            if not isinstance(response, dict):
+                continue
+            request_id = str(response.get("requestid"))
+            with self._dynamic_lock:
+                pending = self._base_requests.pop(request_id, None)
+                if pending is None or pending[0] != response.get("service"):
+                    continue
+                service, keys = pending
+                content = response.get("content") or {}
+                code = content.get("code")
+                discarded = 0
+                if code == 19:
+                    match = re.search(r"DISCARDED=(\d+)", str(content.get("msg") or ""))
+                    discarded = min(len(keys), int(match.group(1))) if match else len(keys)
+                elif code != 0:
+                    discarded = len(keys)
+                accepted = keys[:len(keys) - discarded] if discarded else keys
+                rejected = keys[len(keys) - discarded:] if discarded else []
+                self._base_acknowledged[service].update(accepted)
+                self._base_rejected[service].update(rejected)
+                self._base_rejected[service].difference_update(accepted)
+                rejected_by_service[service] = rejected
+                if rejected:
+                    error = str(content.get("msg") or f"Schwab {service} response {code}")
+                    self._dynamic_health[service] = {"status": "degraded", "error": error}
+                else:
+                    pending_service = any(svc == service for svc, _ in self._base_requests.values())
+                    pending_service = pending_service or any(
+                        item[1] == service for item in self._dynamic_requests.values())
+                    self._dynamic_health[service] = {
+                        "status": "restoring" if pending_service else "live", "error": None}
+        return rejected_by_service
+
+    def watch_screeners(self, keys: list[str]) -> dict:
+        """Replace SCREENER_EQUITY keys without touching Chart or Level One."""
+        from scanner.schwab_screener import validate_screener_key
+        if not isinstance(keys, list) or not keys or len(keys) > 50:
+            raise ValueError("screener list must contain 1 to 50 keys")
+        normalized = list(dict.fromkeys(validate_screener_key(key) for key in keys))
+        with self._screener_lock:
+            stream = self._stream
+            if stream is None:
+                raise ValueError("Schwab stream is not started")
+            old = set(self._screener_keys)
+            add, remove = sorted(set(normalized) - old), sorted(old - set(normalized))
+            if add:
+                self._send_screener_requests(stream, add, "0,1,2,3,4", "ADD")
+            if remove:
+                self._send_screener_requests(stream, remove, "0", "UNSUBS")
+            self._screener_keys = normalized
+            self.screener_book.requested(normalized)
+        return self.screener_book.snapshot()
+
+    def set_dynamic_controller(self, controller) -> None:
+        """Attach the session-only promotion controller to this stream owner."""
+        with self._dynamic_lock:
+            self._dynamic_controller = controller
+
+    def dynamic_capacity(self) -> dict:
+        with self._dynamic_lock, self._quote_lock:
+            chart_cap = int(self._dynamic_caps["CHART_EQUITY"])
+            level_cap = int(self._dynamic_caps["LEVELONE_EQUITIES"])
+            chart_requested = sum(
+                row.get("chart") in {"requested", "acknowledged"}
+                and symbol not in self.streamed_symbols
+                for symbol, row in self._dynamic_memberships.items()
+            )
+            level_requested = sum(
+                row.get("level_one") in {"requested", "acknowledged"}
+                and symbol not in self.quote_covered_symbols
+                for symbol, row in self._dynamic_memberships.items()
+            )
+            chart_used = len(set(self.streamed_symbols)) + chart_requested
+            level_used = len(set(self.quote_covered_symbols)) + level_requested
+            protected = set(getattr(self._dynamic_controller, "protected_symbols", lambda: set())())
+            chart_ack = (len(self._base_acknowledged["CHART_EQUITY"])
+                         if self._base_tracking["CHART_EQUITY"] else len(set(self.streamed_symbols)))
+            chart_ack += sum(row.get("chart") == "acknowledged"
+                             and symbol not in self._base_acknowledged["CHART_EQUITY"]
+                             for symbol, row in self._dynamic_memberships.items())
+            level_ack = (len(self._base_acknowledged["LEVELONE_EQUITIES"])
+                         if self._base_tracking["LEVELONE_EQUITIES"] else len(set(self.quote_covered_symbols)))
+            level_ack += sum(row.get("level_one") == "acknowledged"
+                             and symbol not in self._base_acknowledged["LEVELONE_EQUITIES"]
+                             for symbol, row in self._dynamic_memberships.items())
+            chart_deficit = max(0, chart_used + self._dynamic_chart_headroom - chart_cap)
+            level_deficit = max(0, level_used - level_cap)
+            service_blocked = any(
+                self._dynamic_health[service]["status"] != "live"
+                for service in ("CHART_EQUITY", "LEVELONE_EQUITIES")
+            )
+            return {
+                "chart": {"used": chart_used, "cap": chart_cap,
+                          "headroom": self._dynamic_chart_headroom,
+                          "available": max(0, chart_cap - chart_used - self._dynamic_chart_headroom),
+                          "deficit": chart_deficit,
+                          "status": ("degraded" if chart_deficit else self._dynamic_health["CHART_EQUITY"]["status"]),
+                          "error": self._dynamic_health["CHART_EQUITY"]["error"],
+                          "acknowledged": chart_ack,
+                          "rejected": len(self._base_rejected["CHART_EQUITY"])},
+                "level_one": {"used": level_used, "cap": level_cap,
+                              "headroom": 0, "available": max(0, level_cap - level_used),
+                              "deficit": level_deficit,
+                              "status": ("degraded" if level_deficit else self._dynamic_health["LEVELONE_EQUITIES"]["status"]),
+                              "error": self._dynamic_health["LEVELONE_EQUITIES"]["error"],
+                              "acknowledged": level_ack,
+                              "rejected": len(self._base_rejected["LEVELONE_EQUITIES"])},
+                "connection_epoch": self._dynamic_connection_epoch,
+                "connected": self._dynamic_connected,
+                "protected_dynamic": len(protected),
+                "admissions_blocked": bool(chart_deficit or level_deficit or not self._dynamic_connected
+                                           or service_blocked),
+            }
+
+    def dynamic_membership(self, symbol: str) -> dict:
+        symbol = str(symbol).upper()
+        with self._dynamic_lock:
+            row = dict(self._dynamic_memberships.get(symbol) or {
+                "symbol": symbol, "chart": "not_requested",
+                "level_one": "not_requested", "error": None,
+            })
+        row["capacity"] = self.dynamic_capacity()
+        return row
+
+    @staticmethod
+    def _request_id(request) -> str | None:
+        if isinstance(request, dict):
+            value = request.get("requestid")
+            return str(value) if value is not None else None
+        return None
+
+    def request_dynamic_membership(self, symbol: str) -> dict:
+        """Request Chart and Level One ADDs on the existing WebSocket."""
+        import re
+        symbol = str(symbol).upper().strip()
+        if re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,9}", symbol) is None:
+            raise ValueError("unsupported equity symbol")
+        with self._dynamic_lock:
+            if symbol in self.streamed_symbols or symbol in self.quote_streamed_symbols:
+                raise ValueError("symbol is already in the live universe")
+            capacity = self.dynamic_capacity()
+            if capacity.get("admissions_blocked"):
+                raise ValueError("dynamic admissions are blocked while Schwab services are not healthy")
+            if capacity["chart"]["available"] < 1:
+                raise ValueError("Schwab Chart Equity capacity has no admission slot after headroom")
+            if capacity["level_one"]["available"] < 1:
+                raise ValueError("Schwab Level One capacity is exhausted")
+            stream = self._stream
+            if stream is None or not bool(getattr(stream, "active", False)):
+                raise ValueError("Schwab stream is not active")
+            row = self._dynamic_memberships[symbol] = {
+                "symbol": symbol, "chart": "requested", "level_one": "requested",
+                "error": None, "desired_chart": True, "desired_level_one": True,
+                "connection_epoch": self._dynamic_connection_epoch,
+            }
+            chart = stream.chart_equity([symbol], "0,1,2,3,4,5,6,7,8", command="ADD")
+            level = stream.level_one_equities(
+                [symbol], "0,1,2,3,4,5,8,9,10,11,34,35,37,38", command="ADD")
+            for service, request in (("CHART_EQUITY", chart), ("LEVELONE_EQUITIES", level)):
+                request_id = self._request_id(request)
+                if request_id is None:
+                    self._dynamic_memberships.pop(symbol, None)
+                    raise ValueError(f"{service} ADD did not provide a request id")
+                self._dynamic_requests[request_id] = (symbol, service, "ADD")
+            stream.send(chart)
+            stream.send(level)
+            self.quote_book.cover(symbol)
+            return dict(row)
+
+    def is_external_quote_watch(self, symbol: str) -> bool:
+        with self._quote_lock:
+            return str(symbol).upper() in self._quote_watched_symbols
+
+    def request_dynamic_release(self, symbol: str) -> dict:
+        """Request service-specific UNSUBS without touching unrelated membership."""
+        symbol = str(symbol).upper().strip()
+        with self._dynamic_lock:
+            row = self._dynamic_memberships.get(symbol)
+            if row is None:
+                raise ValueError("symbol has no dynamic provider membership")
+            stream = self._stream
+            if stream is None or not bool(getattr(stream, "active", False)):
+                raise ValueError("Schwab stream is not active")
+            row.update({"chart": "removal_requested", "level_one": "removal_requested",
+                        "error": None, "desired_chart": False, "desired_level_one": False,
+                        "connection_epoch": self._dynamic_connection_epoch})
+            chart = stream.chart_equity([symbol], "0", command="UNSUBS")
+            level = stream.level_one_equities([symbol], "0", command="UNSUBS")
+            for service, request in (("CHART_EQUITY", chart), ("LEVELONE_EQUITIES", level)):
+                request_id = self._request_id(request)
+                if request_id is None:
+                    raise ValueError(f"{service} UNSUBS did not provide a request id")
+                self._dynamic_requests[request_id] = (symbol, service, "UNSUBS")
+            stream.send(chart)
+            stream.send(level)
+            return dict(row)
+
+    def _ingest_dynamic_responses(self, raw) -> None:
+        try:
+            message = json.loads(raw) if isinstance(raw, (str, bytes)) else raw
+        except (TypeError, ValueError):
+            return
+        notifications: list[tuple[str, dict]] = []
+        for response in (message or {}).get("response", []) or []:
+            if not isinstance(response, dict):
+                continue
+            service = str(response.get("service") or "")
+            request_id = str(response.get("requestid"))
+            with self._dynamic_lock:
+                pending = self._dynamic_requests.pop(request_id, None)
+                if pending is None or pending[1] != service:
+                    continue
+                symbol, _, command = pending
+                row = self._dynamic_memberships.get(symbol)
+                if row is None:
+                    continue
+                content = response.get("content") or {}
+                code = content.get("code")
+                key = "chart" if service == "CHART_EQUITY" else "level_one"
+                if code == 0:
+                    pending_service = any(item[1] == service for item in self._dynamic_requests.values())
+                    pending_service = pending_service or any(
+                        item[0] == service for item in self._base_requests.values())
+                    self._dynamic_health[service] = {
+                        "status": "restoring" if pending_service else "live", "error": None}
+                    row[key] = "removed" if command == "UNSUBS" else "acknowledged"
+                    if command == "UNSUBS" and service == "CHART_EQUITY":
+                        self.streamed_symbols = [item for item in self.streamed_symbols if item != symbol]
+                    elif command == "UNSUBS" and service == "LEVELONE_EQUITIES":
+                        with self._quote_lock:
+                            self.quote_covered_symbols = [item for item in self.quote_covered_symbols if item != symbol]
+                            self.quote_book.coverage(symbol, "not_watched")
+                    elif service == "CHART_EQUITY" and symbol not in self.streamed_symbols:
+                        self.streamed_symbols.append(symbol)
+                    elif service == "LEVELONE_EQUITIES":
+                        with self._quote_lock:
+                            if symbol not in self.quote_covered_symbols:
+                                self.quote_covered_symbols.append(symbol)
+                            self.quote_book.coverage(symbol, "subscribing")
+                else:
+                    row[key] = "removal_rejected" if command == "UNSUBS" else "rejected"
+                    row["error"] = str(content.get("msg") or f"Schwab {service} response {code}")
+                    self._dynamic_health[service] = {"status": "degraded", "error": row["error"]}
+                    cap = self.parse_symbol_cap(message, service)
+                    if cap is not None:
+                        self._dynamic_caps[service] = cap
+                notifications.append((symbol, dict(row)))
+        controller = self._dynamic_controller
+        if controller is not None:
+            for symbol, snapshot in notifications:
+                controller.on_membership(symbol, snapshot)
+
+    def _dynamic_connection_changed(self, active: bool) -> None:
+        """Invalidate or restore dynamic service membership on stream transitions."""
+        notifications: list[tuple[str, dict]] = []
+        restore = False
+        with self._dynamic_lock:
+            active = bool(active)
+            if active == self._dynamic_connected and self._dynamic_ever_connected:
+                return
+            prior = self._dynamic_connected
+            self._dynamic_connected = active
+            if active:
+                restore = self._dynamic_ever_connected and not prior
+                self._dynamic_ever_connected = True
+                for service in self._dynamic_health:
+                    self._dynamic_health[service] = {
+                        "status": ("restoring" if restore or any(
+                            item[0] == service for item in self._base_requests.values())
+                            or any(item[1] == service for item in self._dynamic_requests.values())
+                            else "live"), "error": None}
+            else:
+                if prior or self._dynamic_ever_connected:
+                    self._dynamic_connection_epoch += 1
+                self._dynamic_ever_connected = True
+                self._dynamic_requests.clear()
+                self._base_requests.clear()
+                for service in self._base_acknowledged:
+                    self._base_acknowledged[service].clear()
+                    self._base_rejected[service].clear()
+                for service in self._dynamic_health:
+                    self._dynamic_health[service] = {"status": "reconnecting", "error": None}
+                for symbol, row in self._dynamic_memberships.items():
+                    if row.get("chart") == "removed" and row.get("level_one") == "removed":
+                        continue
+                    row.update({"chart": "reconnecting", "level_one": "reconnecting",
+                                "error": None, "connection_epoch": self._dynamic_connection_epoch})
+                    notifications.append((symbol, dict(row)))
+        controller = self._dynamic_controller
+        if controller is not None and not active:
+            controller.on_connection(False, self._dynamic_connection_epoch)
+        if restore:
+            self._restore_base_memberships()
+            with self._screener_lock:
+                screener_keys = list(self._screener_keys)
+            self.screener_book.requested(screener_keys)
+            self._send_screener_requests(self._stream, screener_keys, "0,1,2,3,4", "ADD")
+            self._restore_dynamic_memberships()
+
+    def _restore_base_memberships(self) -> None:
+        """Reassert fixed/startup and external-watch membership after reconnect."""
+        with self._dynamic_lock, self._quote_lock:
+            stream = self._stream
+            if stream is None or not bool(getattr(stream, "active", False)):
+                return
+            dynamic = set(self._dynamic_memberships)
+            chart_symbols = [symbol for symbol in self.streamed_symbols if symbol not in dynamic]
+            quote_symbols = [symbol for symbol in self.quote_covered_symbols if symbol not in dynamic]
+            for service in self._base_tracking:
+                self._base_tracking[service] = False
+            for i in range(0, len(chart_symbols), 250):
+                keys = chart_symbols[i:i + 250]
+                request = stream.chart_equity(keys, "0,1,2,3,4,5,6,7,8", command="ADD")
+                self._expect_base_request("CHART_EQUITY", keys, request)
+                stream.send(request)
+            for i in range(0, len(quote_symbols), 250):
+                keys = quote_symbols[i:i + 250]
+                request = stream.level_one_equities(
+                    keys, "0,1,2,3,4,5,8,9,10,11,34,35,37,38", command="ADD")
+                self._expect_base_request("LEVELONE_EQUITIES", keys, request)
+                stream.send(request)
+
+    def _restore_dynamic_memberships(self) -> None:
+        """Reassert desired dynamic services on the replacement stream."""
+        with self._dynamic_lock:
+            stream = self._stream
+            if stream is None or not bool(getattr(stream, "active", False)):
+                return
+            rows = [(symbol, dict(row)) for symbol, row in self._dynamic_memberships.items()
+                    if row.get("chart") == "reconnecting" or row.get("level_one") == "reconnecting"]
+            for symbol, snapshot in rows:
+                add = bool(snapshot.get("desired_chart") or snapshot.get("desired_level_one"))
+                command = "ADD" if add else "UNSUBS"
+                fields = ("0,1,2,3,4,5,6,7,8" if add else "0")
+                quote_fields = ("0,1,2,3,4,5,8,9,10,11,34,35,37,38" if add else "0")
+                chart = stream.chart_equity([symbol], fields, command=command)
+                level = stream.level_one_equities([symbol], quote_fields, command=command)
+                row = self._dynamic_memberships[symbol]
+                row.update({"chart": "requested" if add else "removal_requested",
+                            "level_one": "requested" if add else "removal_requested",
+                            "connection_epoch": self._dynamic_connection_epoch})
+                for service, request in (("CHART_EQUITY", chart), ("LEVELONE_EQUITIES", level)):
+                    request_id = self._request_id(request)
+                    if request_id is None:
+                        key = "chart" if service == "CHART_EQUITY" else "level_one"
+                        row[key] = "unavailable"
+                        row["error"] = f"{service} {command} restore did not provide a request id"
+                        self._dynamic_health[service] = {"status": "unavailable", "error": row["error"]}
+                        continue
+                    self._dynamic_requests[request_id] = (symbol, service, command)
+                    stream.send(request)
+                controller = self._dynamic_controller
+                if controller is not None:
+                    controller.on_membership(symbol, dict(row))
 
     def watch_quotes(self, symbols: list[str]) -> dict:
         """Replace external held-symbol watch set on the existing Schwab stream.

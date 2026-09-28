@@ -60,8 +60,10 @@ no login because nothing is exposed to the network.
 - **Universe filters.** Named screens over price, liquidity, ATR, float, sector, relative volume and
   more, deciding which stocks a setup may alert on.
 - **Dashboard windows.** Alert tables, charts, rankings (gainers, losers, most active, pre-market
-  lists, new highs and lows), a Yahoo-backed candidate screener, news, stock info, watchlists, Setup
-  Check and a market clock. Screener results can be saved as named, described watchlists; one list can
+  lists, new highs and lows), a Yahoo-backed candidate screener, an observe-only live Schwab market
+  screener with bounded session history, news, stock info, watchlists, Setup
+  Check and a market clock. Discovery candidates can be saved as named, described watchlists without
+  changing live subscriptions; one list can
   be selected as the scanner universe for the next start.
 - **One data connection.** Everything runs in one process on one market-data websocket: Alpaca by
   default, or Charles Schwab, which is free with a brokerage account. Providers sit behind one
@@ -109,6 +111,10 @@ runs on. Alerts, parameters, a plain-English summary and a per-stock check are t
 
 Those two ship because they are the two the project runs on and tests against. Another provider is
 one class and one line in a registry: [adding a data provider](USER_GUIDE.md#adding-a-data-provider).
+
+To check Alpaca's free stock stream without changing or stopping the scanner, run the
+[standalone stream probe](docs/ALPACA_STREAM_PROBE.md). It reports feed entitlement,
+acknowledged symbols, event types, and observed timestamp lag.
 
 Tested on Windows. macOS and Linux should work through `start_scanner.sh`.
 
@@ -185,6 +191,9 @@ The source-backed architecture set is published on GitHub Pages:
 
 For the scanner's saved alerts and what they mean, see the [Alert and setup reference](docs/SETUP_REFERENCE.md)
 and the [User Guide](USER_GUIDE.md#5-setups).
+Future ordered pattern work is captured in the [candle-behavior engine design](docs/CANDLE_BEHAVIOR_ENGINE.md)
+and its [cross-project pattern inventory](docs/CANDLE_BEHAVIOR_INVENTORY.md). These are design documents;
+they do not describe an enabled live detector.
 The staged, no-lookahead cutover to Pandas TA Classic is tracked in the
 [indicator migration plan](docs/INDICATOR_MIGRATION.md); no live indicator math has switched yet.
 
@@ -217,6 +226,9 @@ alert archives) are left alone. Release notes call out anything that needs a one
 | `ALPACA_FEED` | `sip` | `sip` (paid, consolidated tape) or `iex` (free, one exchange) |
 | `DATA_PROVIDER` | `alpaca` | `alpaca`, `schwab`, or a provider you add yourself |
 | `SCHWAB_APP_KEY`, `SCHWAB_APP_SECRET`, `SCHWAB_CALLBACK_URL` | none | Charles Schwab market data |
+| `SCHWAB_CHART_HEADROOM` | `5` | Chart Equity slots reserved from manual dynamic admission |
+| `SCHWAB_DISCOVERY_RETENTION` | `20` | Final Schwab discovery sessions retained (bounded to 1–100) |
+| `SCHWAB_DISCOVERY_PATH` | `data/schwab_discovery/sessions.jsonl` | Schwab discovery-session history location |
 | `NEWS_RSS_SOURCES` | `yahoo,nasdaq` | Free per-symbol news feeds. Empty turns them off |
 
 ## Layout

@@ -2,7 +2,7 @@ import type {
   Bar, CheckResult, ClockInfo, CustomSetup, SetupsPayload, EventsPayload, Fundamentals, NewsPayload, PremarketPayload, Screen,
   SettingsPayload, SettingsStats, SnapshotPayload, StockInfo, ToplistPayload, UniverseMetaPayload, Watchlist,
   MembersResult, ProfilesPayload, UniverseProfile, ToplistsPayload, SetupCheckPayload,
-  YahooScreenerCatalog, YahooScreenerPayload, ScreenerConfig, UniverseSelectionPayload,
+  YahooScreenerCatalog, YahooScreenerPayload, ScreenerConfig, SchwabDiscoverySession, SchwabDiscoverySessionSummary, SchwabPromotionState, SchwabScreenerCatalog, SchwabScreenerPayload, UniverseSelectionPayload,
 } from '../types'
 
 export interface QuoteObservation {
@@ -84,6 +84,27 @@ export const api = {
       limit: config.limit, include_otc: config.includeOtc,
     }),
   },
+  schwabScreener: (key?: string) => json<SchwabScreenerPayload>(
+    `/api/v2/screener/schwab${key ? `?key=${encodeURIComponent(key)}` : ''}`),
+  schwabScreenerCatalog: () => json<SchwabScreenerCatalog>('/api/v2/screener/schwab/catalog'),
+  setSchwabScreenerSubscriptions: (keys: string[]) =>
+    put<SchwabScreenerPayload>('/api/v2/screener/schwab/subscriptions', { keys }),
+  admitSchwabCandidate: (symbol: string) =>
+    post<SchwabPromotionState>(`/api/v2/screener/schwab/admit/${encodeURIComponent(symbol)}`, {}),
+  protectSchwabCandidate: (symbol: string, reason: 'manual' | 'operator_hold', enabled: boolean) =>
+    put<SchwabPromotionState>(`/api/v2/screener/schwab/membership/${encodeURIComponent(symbol)}/protection`, { reason, enabled }),
+  releaseSchwabCandidate: (symbol: string) =>
+    post<SchwabPromotionState>(`/api/v2/screener/schwab/release/${encodeURIComponent(symbol)}`, {}),
+  schwabMembership: (symbol: string) =>
+    json<SchwabPromotionState>(`/api/v2/screener/schwab/membership/${encodeURIComponent(symbol)}`),
+  schwabDiscoverySessions: () =>
+    json<{ sessions: SchwabDiscoverySessionSummary[] }>('/api/v2/screener/schwab/sessions').then(d => d.sessions ?? []),
+  schwabDiscoverySession: (sessionDate: string) =>
+    json<SchwabDiscoverySession>(`/api/v2/screener/schwab/sessions/${encodeURIComponent(sessionDate)}`),
+  saveSchwabCandidates: (watchlistId: string, body: {
+    session_date: string; symbols: string[]; name?: string; description?: string; mode: 'append' | 'replace'
+  }) => put<{ ok: boolean; watchlist: Watchlist; universe_selection_unchanged: boolean }>(
+    `/api/v2/screener/schwab/watchlists/${encodeURIComponent(watchlistId)}`, body),
   universeSelection: {
     get: () => json<UniverseSelectionPayload>('/api/v2/universe/selection'),
     set: (watchlistId: string | null) =>

@@ -37,6 +37,23 @@ class SeededEMA:
         self.value = None if pd.isna(last) else float(last)
         return self.value
 
+    def accept_precomputed(self, close: float, value: float | None) -> float | None:
+        """Advance with a value already calculated by Pandas TA Classic.
+
+        Startup replay computes a whole EMA series in one library call, then
+        feeds each completed-candle value through this tracker.  This preserves
+        the exact live tracker state without recalculating every growing prefix.
+        """
+        price = float(close)
+        self.prev = self.value
+        if not math.isfinite(price):
+            self._closes.clear()
+            self.value = self.prev = None
+            return None
+        self._closes.append(price)
+        self.value = None if value is None or pd.isna(value) else float(value)
+        return self.value
+
     def seed(self, closes: list[float]) -> pd.Series:
         """Warm from completed closes with one Classic calculation per valid run."""
         prices = pd.Series(closes, dtype=float)

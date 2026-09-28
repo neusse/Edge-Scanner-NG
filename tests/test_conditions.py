@@ -49,7 +49,8 @@ def test_spread_condition_uses_shared_quote_and_fails_closed():
     ctx = C.ConditionCtx(state=SimpleNamespace(symbol="AMD"), quote=quote)
     cond = C.normalize_condition({"id": "spread_bps", "op": "lte", "value": 20})
     assert C.check(cond, ctx).passed
-    assert not C.check(cond, C.ConditionCtx(state=ctx.state, quote={**quote, "ask_age_ms": 3000})).passed
+    assert C.check(cond, C.ConditionCtx(state=ctx.state, quote={**quote, "ask_age_ms": 3000})).passed
+    assert not C.CATALOG["spread_bps"].params
     assert not C.check(cond, C.ConditionCtx(state=ctx.state, quote={**quote, "quality": "locked"})).passed
     assert not C.check(cond, C.ConditionCtx(state=ctx.state, quote=None)).passed
 

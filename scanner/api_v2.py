@@ -31,9 +31,10 @@ from scanner.alert_provenance import custom_revision, effective_revision, system
 from scanner import plugins
 from scanner.custom_setups import CustomEvaluator, CustomSetupStore, SetupError, SetupNames, summary_lines
 from scanner.events import EventBuffer
+from scanner.dynamic_universe import ManualPromotionController, PromotionError
 from scanner.recent_activity import build_setup_check
 from scanner.fundamentals import FundamentalsCache, get_cache as get_fundamentals_cache
-from scanner.json_store import LayoutStore, UniverseSelectionStore, WatchlistStore, sanitize_id
+from scanner.json_store import LayoutStore, UniverseSelectionStore, WatchlistStore, normalize_symbols, sanitize_id
 from scanner.conditions import catalog_json as conditions_catalog_json
 from scanner.news import NewsClient
 from scanner.profiles import (
@@ -51,6 +52,7 @@ from scanner.toplists import (
 from scanner.trigger_catalog import BY_ID, catalog_json
 from scanner.universe_selection import stream_symbols
 from scanner.yahoo_screener import PRESETS as YAHOO_PRESETS, YahooScreener, YahooScreenerError
+from scanner.schwab_screener import screener_catalog, validate_screener_key
 
 log = logging.getLogger(__name__)
 
@@ -272,6 +274,12 @@ class V2State:
         )
         self.news = news_client or NewsClient(os.environ.get("ALPACA_API_KEY"), os.environ.get("ALPACA_SECRET_KEY"))
         self.toplists = ToplistEngine(app_state.scanner)
+        feed = getattr(app_state, "feed", None)
+        self.promotions = (
+            ManualPromotionController(app_state.scanner, feed)
+            if callable(getattr(feed, "request_dynamic_membership", None))
+            else None
+        )
         # run_live.py creates the buffer before the scanner starts so the HOD/LOD
         # hook and this API share it; tests get a fresh one.
         buf = getattr(app_state, "event_buffer", None)
@@ -531,6 +539,183 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
             if "sector_etf" not in meta[s] or meta[s].get("sector_etf") is None:
                 meta[s] = {**meta[s], "sector_etf": sector_of(s)}
         return JSONResponse(clean({"symbols": syms, "meta": meta}))
+
+    @app.get("/api/v2/screener/schwab")
+    async def v2_schwab_screener(key: str = Query("")) -> JSONResponse:
+        """Latest SCREENER_EQUITY snapshot; observation never changes membership."""
+        book = getattr(getattr(app_state, "feed", None), "screener_book", None)
+        if book is None:
+            return JSONResponse({
+                "mode": "observe", "source": "schwab_screener_equity",
+                "status": "unavailable", "connected": False,
+                "requested_keys": [], "list_key": key or None,
+                "provider_timestamp": None, "receipt_timestamp": None,
+                "receipt_age_ms": None, "stream_activity_age_ms": None,
+                "error": "Schwab screener feed unavailable", "lists": [], "rows": [],
+            })
+        payload = book.snapshot(key or None)
+        universe = set(getattr(scanner, "_states", {}) or {})
+        payload["rows"] = [
+            {**row, "in_live_universe": row.get("symbol") in universe,
+             "promotion": (v2.promotions.status(row.get("symbol"))
+                           if v2.promotions is not None else None)}
+            for row in payload.get("rows", [])
+        ]
+        payload["capacity"] = (
+            getattr(app_state.feed, "dynamic_capacity")()
+            if callable(getattr(app_state.feed, "dynamic_capacity", None)) else None
+        )
+        return JSONResponse(clean(payload))
+
+    @app.get("/api/v2/screener/schwab/catalog")
+    async def v2_schwab_screener_catalog() -> JSONResponse:
+        return JSONResponse(screener_catalog())
+
+    @app.put("/api/v2/screener/schwab/subscriptions")
+    async def v2_schwab_screener_subscriptions(body: dict = Body(...)) -> JSONResponse:
+        configure = getattr(getattr(app_state, "feed", None), "watch_screeners", None)
+        if configure is None:
+            return JSONResponse({"error": "live Schwab screener configuration unavailable"}, status_code=503)
+        try:
+            keys = body.get("keys")
+            if not isinstance(keys, list):
+                raise ValueError("keys must be a list")
+            normalized = [validate_screener_key(key) for key in keys]
+            return JSONResponse(clean(configure(normalized)))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+
+    @app.get("/api/v2/screener/schwab/membership/{symbol}")
+    async def v2_schwab_membership(symbol: str) -> JSONResponse:
+        if v2.promotions is None:
+            return JSONResponse({"error": "manual Schwab admission unavailable"}, status_code=503)
+        return JSONResponse(clean(v2.promotions.status(symbol)))
+
+    @app.post("/api/v2/screener/schwab/admit/{symbol}")
+    async def v2_schwab_admit(symbol: str) -> JSONResponse:
+        if v2.promotions is None:
+            return JSONResponse({"error": "manual Schwab admission unavailable"}, status_code=503)
+        book = getattr(getattr(app_state, "feed", None), "screener_book", None)
+        live = book.snapshot("combined") if book is not None else None
+        session = (live or {}).get("session") or {}
+        if session.get("status") != "open":
+            return JSONResponse({"error": "the current discovery session is not open"}, status_code=409)
+        wanted = str(symbol).upper().strip()
+        candidate = next((row for row in (live or {}).get("rows", [])
+                          if row.get("symbol") == wanted), None)
+        if wanted in set(getattr(scanner, "_states", {}) or {}):
+            return JSONResponse({"error": "symbol is already in the live universe"}, status_code=409)
+        try:
+            return JSONResponse(clean(v2.promotions.admit(wanted, candidate)))
+        except PromotionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+
+    @app.put("/api/v2/screener/schwab/membership/{symbol}/protection")
+    async def v2_schwab_protection(symbol: str, body: dict = Body(...)) -> JSONResponse:
+        if v2.promotions is None:
+            return JSONResponse({"error": "manual Schwab admission unavailable"}, status_code=503)
+        try:
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                raise PromotionError("enabled must be true or false")
+            return JSONResponse(clean(v2.promotions.protect(symbol, str(body.get("reason") or ""), enabled)))
+        except PromotionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+
+    @app.post("/api/v2/screener/schwab/release/{symbol}")
+    async def v2_schwab_release(symbol: str) -> JSONResponse:
+        if v2.promotions is None:
+            return JSONResponse({"error": "manual Schwab admission unavailable"}, status_code=503)
+        try:
+            return JSONResponse(clean(v2.promotions.release(symbol)))
+        except PromotionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+
+    @app.get("/api/v2/screener/schwab/sessions")
+    async def v2_schwab_discovery_sessions() -> JSONResponse:
+        """Bounded, finalized discovery sessions for after-hours review."""
+        book = getattr(getattr(app_state, "feed", None), "screener_book", None)
+        if book is None:
+            return JSONResponse({"sessions": []})
+        return JSONResponse(clean({"sessions": book.sessions()}))
+
+    @app.get("/api/v2/screener/schwab/sessions/{session_date}")
+    async def v2_schwab_discovery_session(session_date: str) -> JSONResponse:
+        book = getattr(getattr(app_state, "feed", None), "screener_book", None)
+        record = book.session(session_date) if book is not None else None
+        if record is None:
+            return JSONResponse({"error": "discovery session not found"}, status_code=404)
+        universe = set(getattr(scanner, "_states", {}) or {})
+        record["candidates"] = [
+            {**row, "in_live_universe": row.get("symbol") in universe}
+            for row in record.get("candidates", [])
+        ]
+        return JSONResponse(clean(record))
+
+    @app.put("/api/v2/screener/schwab/watchlists/{wl_id}")
+    async def v2_schwab_candidates_to_watchlist(
+        wl_id: str, body: dict = Body(...),
+    ) -> JSONResponse:
+        """Copy selected observations into a watchlist without changing membership."""
+        if sanitize_id(wl_id) is None:
+            return JSONResponse({"error": "invalid watchlist id"}, status_code=400)
+        body = body if isinstance(body, dict) else {}
+        symbols = normalize_symbols(body.get("symbols"))
+        if not symbols:
+            return JSONResponse({"error": "select at least one discovery candidate"}, status_code=400)
+        mode = str(body.get("mode") or "append").strip().lower()
+        if mode not in {"append", "replace"}:
+            return JSONResponse({"error": "mode must be append or replace"}, status_code=400)
+        book = getattr(getattr(app_state, "feed", None), "screener_book", None)
+        session_date = str(body.get("session_date") or "").strip()
+        record = book.session(session_date) if book is not None and session_date else None
+        if record is None:
+            return JSONResponse({"error": "discovery session not found"}, status_code=404)
+        candidates = {str(row.get("symbol") or "").upper(): row
+                      for row in record.get("candidates", [])}
+        unknown = [symbol for symbol in symbols if symbol not in candidates]
+        if unknown:
+            return JSONResponse({
+                "error": "symbols are not in the selected discovery session: " + ", ".join(unknown)
+            }, status_code=400)
+        existing = next((item for item in v2.watchlists.load_all()
+                         if item.get("id") == wl_id), None)
+        prior_symbols = ((existing or {}).get("symbols") or []) if mode == "append" else []
+        merged = normalize_symbols([*prior_symbols, *symbols])
+        now = datetime.now(_ET).isoformat(timespec="seconds")
+        list_keys = sorted({
+            str(item.get("list_key"))
+            for symbol in symbols
+            for item in (candidates[symbol].get("contributing_lists") or [])
+            if item.get("list_key")
+        })
+        rec = v2.watchlists.save({
+            "id": wl_id,
+            "name": body.get("name") or (existing or {}).get("name") or wl_id,
+            "description": (body.get("description") if "description" in body
+                            else (existing or {}).get("description") or ""),
+            "symbols": merged,
+            "createdAt": (existing or {}).get("createdAt") or now,
+            "updatedAt": now,
+            "source": "schwab_screener",
+            "sourceLabel": "Schwab discovery candidates",
+            "capturedAt": now,
+            "sourceSessionDate": record.get("session_date"),
+            "sourceSessionStatus": record.get("status"),
+            "sourceListKeys": ",".join(list_keys),
+        })
+        book.record_membership_decision(str(record.get("session_date")), symbols, {
+            "action": "save_watchlist", "watchlist_id": wl_id,
+            "mode": mode, "decided_at": now,
+        })
+        return JSONResponse(clean({
+            "ok": True,
+            "watchlist": rec,
+            "capture": {"session_date": record.get("session_date"),
+                        "session_status": record.get("status"),
+                        "list_keys": list_keys, "symbols": symbols},
+            "universe_selection_unchanged": True,
+        }))
 
     # ── settings (Config panel) ──────────────────────────────────────────────
 

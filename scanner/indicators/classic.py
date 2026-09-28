@@ -5,15 +5,56 @@ missing warm-up values remain NaN and must never be treated as a signal.
 """
 from __future__ import annotations
 
+import logging
 import pandas as pd
 import pandas_ta_classic as ta
 import warnings
 
 VERSION = f"pandas-ta-classic/{ta.version}"
+log = logging.getLogger(__name__)
 
 
 def _empty(index: pd.Index, columns: tuple[str, ...]) -> pd.DataFrame:
     return pd.DataFrame(float("nan"), index=index, columns=list(columns))
+
+
+def _chronological(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.Index | None]:
+    """Return candles in calculation order and the caller order to restore.
+
+    Native studies are order-dependent. Provider responses and replay fixtures
+    are allowed to arrive out of order, but two candles at the same timestamp
+    are ambiguous and must be reconciled by the caller before calculation.
+    """
+    if not isinstance(frame.index, pd.DatetimeIndex):
+        return frame, None
+    if frame.index.hasnans:
+        raise ValueError("indicator candles require valid timestamps")
+    if frame.index.has_duplicates:
+        raise ValueError("indicator candles require unique timestamps")
+    original = frame.index.copy()
+    if frame.index.tz is None:
+        log.warning("Indicator timestamps had no timezone; interpreting them as UTC")
+        frame = frame.copy()
+        frame.index = frame.index.tz_localize("UTC")
+        if not frame.index.is_monotonic_increasing:
+            log.warning("Indicator candles arrived out of order; sorting by timestamp")
+            frame = frame.sort_index(kind="stable")
+        return frame, original
+    if frame.index.is_monotonic_increasing:
+        return frame, None
+    log.warning("Indicator candles arrived out of order; sorting by timestamp")
+    return frame.sort_index(kind="stable"), original
+
+
+def _restore_order(result: pd.DataFrame, original: pd.Index | None) -> pd.DataFrame:
+    if original is None:
+        return result
+    lookup = original
+    if isinstance(original, pd.DatetimeIndex) and original.tz is None:
+        lookup = original.tz_localize("UTC")
+    restored = result.reindex(lookup)
+    restored.index = original
+    return restored
 
 
 def calculate(frame: pd.DataFrame, name: str, length: int | None = None) -> pd.DataFrame:
@@ -37,6 +78,7 @@ def calculate(frame: pd.DataFrame, name: str, length: int | None = None) -> pd.D
         raise ValueError(f"unknown Classic indicator: {name}")
     if frame.empty:
         return _empty(frame.index, columns)
+    frame, original_order = _chronological(frame)
     # A missing candle is a discontinuity, not a zero-range observation.
     # Restart native studies on each complete segment; the arithmetic remains
     # Classic's, while Edge owns input integrity and session selection.
@@ -51,7 +93,7 @@ def calculate(frame: pd.DataFrame, name: str, length: int | None = None) -> pd.D
         segment = (complete != complete.shift(fill_value=False)).cumsum()
         for _, part in frame[complete].groupby(segment[complete]):
             result.loc[part.index] = calculate(part, name, length).to_numpy()
-        return result
+        return _restore_order(result, original_order)
     close = pd.to_numeric(frame["close"], errors="coerce")
     high = pd.to_numeric(frame["high"], errors="coerce") if "high" in frame else None
     low = pd.to_numeric(frame["low"], errors="coerce") if "low" in frame else None
@@ -86,19 +128,32 @@ def calculate(frame: pd.DataFrame, name: str, length: int | None = None) -> pd.D
         index = frame.index.tz_localize("UTC") if frame.index.tz is None else frame.index
         et = frame.copy()
         et.index = index.tz_convert("America/New_York")
+        package_log = logging.getLogger("pandas_ta_classic.overlap.vwap")
+
+        class _SinglePointOrderFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:
+                return not (len(et) == 1 and "not datetime ordered" in record.getMessage())
+
+        false_positive_filter = _SinglePointOrderFilter()
+        package_log.addFilter(false_positive_filter)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message="Converting to PeriodArray/Index representation will drop timezone information")
-            raw = ta.vwap(et.high, et.low, et.close, et.volume, anchor="D")
+            try:
+                raw = ta.vwap(et.high, et.low, et.close, et.volume, anchor="D")
+            finally:
+                package_log.removeFilter(false_positive_filter)
         if raw is not None:
             raw.index = frame.index
     if raw is None:
-        return _empty(frame.index, columns)
+        return _restore_order(_empty(frame.index, columns), original_order)
     if isinstance(raw, pd.Series):
-        return pd.DataFrame({columns[0]: raw}, index=frame.index)
+        result = pd.DataFrame({columns[0]: raw}, index=frame.index)
+        return _restore_order(result, original_order)
     # Classic output order is documented and fixed by the pinned version.
     if name == "macd":
         raw = raw.iloc[:, [0, 2, 1]]
-    return pd.DataFrame(raw.to_numpy(), index=frame.index, columns=list(columns))
+    result = pd.DataFrame(raw.to_numpy(), index=frame.index, columns=list(columns))
+    return _restore_order(result, original_order)
 
 
 def candles_frame(candles: list[dict]) -> pd.DataFrame:

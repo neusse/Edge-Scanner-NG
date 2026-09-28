@@ -66,7 +66,7 @@ export type SortDir = 'asc' | 'desc'
 export type LinkColor = 'none' | 'red' | 'green' | 'blue' | 'yellow' | 'purple'
 export const LINK_COLORS: Exclude<LinkColor, 'none'>[] = ['red', 'green', 'blue', 'yellow', 'purple']
 
-export type WindowType = 'scanner' | 'chart' | 'quotes' | 'toplist' | 'screener' | 'news' | 'stockinfo' | 'watchlist' | 'clock' | 'setupcheck'
+export type WindowType = 'scanner' | 'chart' | 'quotes' | 'toplist' | 'screener' | 'schwabscreener' | 'news' | 'stockinfo' | 'watchlist' | 'clock' | 'setupcheck'
 /** alert producers on the unified feed */
 export type FeedId = 'system' | 'custom'
 export type ToneName = 'ping' | 'chime' | 'buzz' | 'off'
@@ -175,6 +175,105 @@ export interface ScreenerConfig extends WindowBase {
   colWidths?: Record<string, number>
 }
 
+export interface SchwabScreenerConfig extends WindowBase {
+  type: 'schwabscreener'
+  view: 'combined' | 'list'
+  listKey: string
+  colWidths?: Record<string, number>
+}
+
+export interface SchwabScreenerContribution {
+  list_key: string; current_rank: number | null; best_rank: number
+  first_seen: string; last_seen: string; recurrence: number
+}
+
+export interface SchwabScreenerRow {
+  list_key: string; rank: number | null; symbol: string; description: string | null
+  provider_timestamp: string | null; price: number | null; net_change: number | null
+  percent_change: number | null; volume: number | null; total_volume: number | null
+  trades: number | null; market_share: number | null; in_live_universe: boolean
+  current_rank: number | null; best_rank: number | null
+  first_seen: string; last_seen: string; recurrence: number
+  contributing_lists: SchwabScreenerContribution[]
+  promotion?: SchwabPromotionState | null
+}
+
+export interface SchwabCapacityService {
+  used: number; cap: number; headroom: number; available: number
+  deficit?: number; status?: 'live' | 'restoring' | 'reconnecting' | 'degraded' | 'unavailable'
+  error?: string | null; acknowledged?: number; rejected?: number
+}
+export interface SchwabCapacity {
+  chart: SchwabCapacityService; level_one: SchwabCapacityService
+  connection_epoch?: number; connected?: boolean; protected_dynamic?: number
+  admissions_blocked?: boolean
+}
+export interface SchwabPromotionState {
+  symbol: string
+  state: 'candidate' | 'requested' | 'acknowledged' | 'warming' | 'ready' | 'failed' | 'reconnecting' | 'releasing' | 'release_reconnecting' | 'release_failed' | 'released'
+  reason: string | null; chart: string; level_one: string
+  requested_at: string | null; acknowledged_at: string | null; ready_at: string | null
+  cooldown_until: number | null; setup_evaluation: 'disabled' | 'enabled' | 'unavailable'
+  epoch?: number | null
+  capacity?: SchwabCapacity
+  history?: Record<string, unknown> | null; merge?: Record<string, unknown> | null
+  readiness?: SchwabDynamicReadiness | null
+  protected?: boolean
+  protections?: { code: 'support' | 'manual' | 'external_watch' | 'warming' | 'minimum_residence' | 'operator_hold'; label: string; remaining_seconds?: number }[]
+  manual_pin?: boolean; operator_hold?: boolean; released_at?: string | null
+  connection_epoch?: number; resume_state?: 'admission' | 'release' | null
+  audit?: { at: string; action: string; [key: string]: unknown }[]
+}
+
+export interface SchwabDynamicReadinessComponent {
+  available: boolean; reason: string
+  [key: string]: unknown
+}
+export interface SchwabDynamicSetupReadiness {
+  id: string; name: string; status: 'ready' | 'unavailable' | 'filtered'; reasons: string[]
+}
+export interface SchwabDynamicReadiness {
+  ready: boolean
+  components: Record<string, SchwabDynamicReadinessComponent>
+  setups: SchwabDynamicSetupReadiness[]
+  ready_setup_ids: string[]
+}
+
+export interface SchwabScreenerListHealth {
+  list_key: string; status: 'live' | 'waiting' | 'disconnected' | 'error'
+  error: string | null; provider_timestamp: string | null; receipt_timestamp: string | null
+  receipt_age_ms: number | null; row_count: number
+}
+
+export interface SchwabScreenerPayload {
+  mode: 'observe'; source: 'schwab_screener_equity'
+  status: 'live' | 'waiting' | 'disconnected' | 'error' | 'unavailable'
+  connected: boolean; requested_keys: string[]; list_key: string | null
+  provider_timestamp: string | null; receipt_timestamp: string | null
+  receipt_age_ms: number | null; stream_activity_age_ms: number | null
+  error: string | null; lists: SchwabScreenerListHealth[]; rows: SchwabScreenerRow[]
+  session?: SchwabDiscoverySessionSummary | null
+  capacity?: SchwabCapacity | null
+}
+
+export interface SchwabDiscoverySessionSummary {
+  session_date: string | null; status: 'open' | 'final'
+  opened_at: string | null; updated_at?: string | null; closed_at: string | null
+  final_reason: string | null; candidate_count?: number
+}
+
+export interface SchwabDiscoverySession extends SchwabDiscoverySessionSummary {
+  schema_version: number; source: 'schwab_screener_equity'; requested_keys: string[]
+  candidates: SchwabScreenerRow[]
+}
+
+export interface SchwabScreenerCatalog {
+  markets: { value: string; label: string }[]
+  measures: { value: string; label: string }[]
+  periods: { value: number; label: string }[]
+  defaults: string[]
+}
+
 export interface NewsConfig extends WindowBase {
   type: 'news'
   mode: 'market' | 'linked'
@@ -191,7 +290,7 @@ export interface ClockConfig extends WindowBase { type: 'clock'; showSpy: boolea
 export interface SetupCheckConfig extends WindowBase { type: 'setupcheck'; symbol: string | null; minutes: number }
 
 export type WindowConfig =
-  | ScannerConfig | ChartConfig | QuotesConfig | ToplistConfig | ScreenerConfig | NewsConfig
+  | ScannerConfig | ChartConfig | QuotesConfig | ToplistConfig | ScreenerConfig | SchwabScreenerConfig | NewsConfig
   | StockInfoConfig | WatchlistConfig | ClockConfig | SetupCheckConfig
 
 export interface Screen {
@@ -342,6 +441,7 @@ export interface Watchlist {
   createdAt?: string; updatedAt: string
   source?: string; sourceLabel?: string; sourceProfileId?: string
   sourceProfileHash?: string; capturedAt?: string
+  sourceSessionDate?: string; sourceSessionStatus?: string; sourceListKeys?: string
 }
 
 export interface YahooScreenerRow {

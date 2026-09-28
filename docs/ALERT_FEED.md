@@ -17,7 +17,15 @@ The machine-readable contract is [alert-feed-v1.schema.json](schemas/alert-feed-
 
 The WebSocket's first frame is `type: "replay"`: up to 500 matching recent alerts in **newest-first** order. This is a connection backlog even when the scanner's `mode` is `live`; it is not a simulated market replay. `truncated: true` means older matching alerts did not fit in that 500-alert frame. It says nothing about alerts beyond the in-memory buffer (default 5,000) or archive retention. Use the recovery endpoint for a complete retained-range read. Subsequent `type: "alert"` frames are emitted in scanner publication order. `type: "status"` appears on a lifecycle change; `type: "heartbeat"` appears every 5 seconds while the API runs. Allow 15 seconds without a frame before reconnecting. A slow client with a 1,000-frame outbox or a send stalled over 5 seconds is disconnected (WebSocket code 1013); recover after reconnect.
 
-Status `state` is `warming_up`, `connecting`, `live`, `stale`, or `stopping`. `live` begins on the first market bar. `stale` means no bar was received for 90 seconds, or connecting lasted that long; a heartbeat proves the API is responsive, **not** that Schwab is healthy. `last_market_timestamp` is the latest bar's market time, or null. `market_age_seconds` is time since local receipt, or null. On a full scanner shutdown the socket disappears; do not assume a final status frame always reaches the client.
+Status `state` is `warming_up`, `connecting`, `live`, `stale`, or `stopping`. `live` begins on the first market bar routed to the ready scanner. `stale` means no bar was received for 90 seconds, or connecting lasted that long; a heartbeat proves the API is responsive, **not** that Schwab is healthy. `last_market_timestamp` is the latest bar's market time, or null. `market_age_seconds` is time since local receipt, or null. On a full scanner shutdown the socket disappears; do not assume a final status frame always reaches the client.
+
+During a Schwab launch, `GET /api/feed/status` also includes `startup`: `phase` (`buffering`, `draining`, `live`, or `failed`), `ready`, `buffered_events`, `oldest_buffered_timestamp`, and `dropped_events`. Buffered and cache-overlap bars only synchronize detector state and are never published. `ready: true` means that reconciliation completed without a known gap and new callbacks can evaluate alerts; it is not an order authorization or a promise that every individual symbol has a fresh quote. `failed` or nonzero `dropped_events` is a fail-closed startup and requires operator attention.
+
+A symbol admitted dynamically has an additional per-symbol gate. Provider acknowledgement and chart
+warmup alone cannot publish an alert: the symbol's current promotion epoch must be ready and the exact
+setup ID must have complete required inputs. Unavailable setups remain absent from evaluation until a
+later completed minute makes their requirements ready. This does not change the alert schema;
+`source_bar` continues to identify the completed one-minute input that was actually evaluated.
 
 ## Alert identity and fields
 
@@ -49,6 +57,17 @@ For a backlog, heartbeat or status frame, top-level `seq` and `event_id` are the
 | `context`, `warnings`, `gates` | Producer evidence and diagnostics; nested keys are additive and may be absent. |
 
 Unless a field is listed as required in the schema, it may be absent. Nullable fields use JSON `null` for unknown; consumers must not substitute zero, `false`, or an empty string. Precision is the source/provider's available precision; do not infer executable quote freshness from an alert price or minute-bar timestamp.
+
+For completed-candle triggers, the trigger's configured timeframe governs the
+pattern, not `source_bar.timeframe`. A five-minute candle is eligible only after
+all five constituent one-minute bars arrive in order and the interval closes;
+a missing minute (including a restart gap) cannot be treated as a completed
+five-minute confirmation or joined into a consecutive streak. A one-minute
+watch trigger can still evaluate its own completed minute. The `source_bar`
+records the input evaluated at publication, while `trigger_evidence` may include
+earlier completed candles in a combined setup. Consumers must not infer a
+five-minute signal from a developing chart candle or mistake an Edge exit-watch
+observation for Trader's position-aware protective stop.
 
 For new scanner-produced alerts, the two revisions and `source_bar` are populated before publication. The catalog endpoint `GET /api/v2/setups` exposes the current values for each system and custom setup. If a setup or its gates change between two alerts, their effective revision changes; the first alert keeps its original value in the archive and replay. Older archived alerts, and publishers that supplied no saved setup or bar, return `null` for unavailable provenance. A consumer that needs an exact detector snapshot must retain the catalog document when it sees a new revision; Edge's current catalog is not a historical-revision store.
 
