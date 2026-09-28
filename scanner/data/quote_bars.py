@@ -43,6 +43,8 @@ from typing import Callable, Optional
 
 import pandas as pd
 
+_RESET_FRACTION = 0.2
+
 
 def round_lot(price: float) -> int:
     """Shares in a round lot at this price (SEC tiers in force since late 2025)."""
@@ -136,9 +138,15 @@ class QuoteBarBuilder:
                 return
             if total == s.total:
                 return                                # bid/ask moved, nothing traded
-            # A smaller total means the provider reset its day counter: everything
-            # it now reports traded since the reset.
-            delta = total - s.total if total > s.total else total
+            if total > s.total:
+                delta = total - s.total
+            elif total < s.total * _RESET_FRACTION:
+                # A genuine counter reset starts a new cumulative baseline.
+                delta = total
+            else:
+                # A stale/corrected snapshot must not lower the high-water mark:
+                # counting the climb back would count the same trades twice.
+                return
             s.total = total
             if delta <= 0:
                 return

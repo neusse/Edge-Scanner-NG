@@ -100,6 +100,17 @@ def test_provider_volume_reset_counts_volume_since_the_reset():
     assert bars[0]["volume"] == 300
 
 
+def test_small_downward_revisions_do_not_double_count_volume():
+    b, bars, clock = _builder()
+    b.on_quote("AAPL", last=50.0, total_volume=1_000)
+    for total in (1_100, 1_050, 1_100, 1_050, 1_150):
+        clock.t += 2
+        b.on_quote("AAPL", last=50.1, total_volume=total)
+    clock.t += 70
+    b.flush()
+    assert bars[0]["volume"] == 150
+
+
 def test_untracked_symbols_are_ignored():
     b, bars, clock = _builder()
     b.on_quote("ZZZ", last=1.0, total_volume=1)

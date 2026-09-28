@@ -46,6 +46,7 @@ sys.path.insert(0, str(_REPO_ROOT))
 load_dotenv(override=True)
 
 from scanner.api import AppState, bind_sockets, create_app
+from scanner import local_guard
 from scanner.feed_hub import FeedHub
 from scanner.data import FEEDS, make_feed
 from scanner.live_scanner import LiveScanner
@@ -378,6 +379,7 @@ def main() -> None:
     if ext is not None:
         ext.add_args(parser)
     args = parser.parse_args()
+    local_guard.allow_hosts(args.host)
 
     # Lock before universe/auth/history work. The replay launcher uses this
     # same installation-scoped file and will refuse while live owns it.
@@ -387,6 +389,12 @@ def main() -> None:
     except RuntimeError as exc:
         sys.exit(str(exc))
     atexit.register(instance_lock.release)
+    # Fail before universe/history warmup if another program owns the API port.
+    try:
+        _api_socks = bind_sockets(args.host, args.port)
+    except OSError as exc:
+        sys.exit(str(exc))
+    atexit.register(lambda: [sock.close() for sock in _api_socks])
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.WARNING),
@@ -673,7 +681,6 @@ def main() -> None:
     print(f"       Dashboard V2: http://localhost:{args.port}/v2  (build: npm --prefix dashboard-v2 run build)", flush=True)
     _server_cfg = uvicorn.Config(_api_app, host=args.host, port=args.port, log_level="warning")
     _api_server = uvicorn.Server(_server_cfg)
-    _api_socks = bind_sockets(args.host, args.port)
     _api_thread = threading.Thread(target=_api_server.run, kwargs={"sockets": _api_socks},
                                    daemon=True, name="api-server")
     _api_thread.start()

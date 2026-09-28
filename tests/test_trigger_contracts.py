@@ -16,7 +16,7 @@ def test_contract_matrix_has_an_explicit_row_and_lifetime_for_every_native_trigg
     from scanner.trigger_catalog import EVENT_LIFETIMES
 
     native = {trigger.id for trigger in CATALOG if trigger.source == "native"}
-    assert len(native) == 52
+    assert len(native) == 53
     assert set(EVENT_LIFETIMES) == native
     matrix = (Path(__file__).resolve().parents[1] / "docs" / "TRIGGER_CONTRACTS.md").read_text()
     for trigger_id in native:
@@ -246,6 +246,34 @@ def context(candles=(), *, bar=None, previous=100.0, completed=True,
     series.m1.append({**bar, "session": "rth"})
     return EvalCtx(state=state or SimpleNamespace(symbol="X", prior_close=100.0, atr_d1=2.0),
                    series=series, bar=bar, et_min=600, session="rth", external=set())
+
+
+def test_confirmed_vwap_cross_requires_consecutive_candles_and_own_vwap():
+    prior = candle(100, 100.1, 99.8, 99.9, 0)
+    crossed = candle(99.9, 100.4, 99.8, 100.2, 1)
+    confirmed = candle(100.2, 100.5, 100.0, 100.3, 2)
+    ctx = context([prior, crossed, confirmed])
+    fire = evaluate("vwap_cross_confirmed", ctx, "above", {"tf": 5})
+    assert fire is not None and fire.direction == "long"
+    confirmed["key"] = (DAY, "rth", 3)
+    assert evaluate("vwap_cross_confirmed", context([prior, crossed, confirmed]), "above", {"tf": 5}) is None
+    confirmed["key"] = (DAY, "rth", 2)
+    confirmed["vwap"] = None
+    assert evaluate("vwap_cross_confirmed", context([prior, crossed, confirmed]), "above", {"tf": 5}) is None
+
+
+def test_range_break_quiet_return_rearms_the_same_range():
+    from scanner.trigger_catalog import _IMPL
+
+    ctx = context([candle(100, 100.1, 99.9, 100, 0),
+                   candle(100, 100.1, 99.9, 100, 1)])
+    params = {"bars": 2, "tf": 5, "max_range_pct": 1.5, "vol_mult": 1.5}
+    ctx.bar = {"close": 101, "volume": 300}
+    assert _IMPL["range_break"](ctx, "up", params) is not None
+    ctx.bar = {"close": 100, "volume": 1}
+    assert _IMPL["range_break"](ctx, "up", params) is None
+    ctx.bar = {"close": 101, "volume": 300}
+    assert _IMPL["range_break"](ctx, "up", params) is not None
 
 
 _PATTERNS = [

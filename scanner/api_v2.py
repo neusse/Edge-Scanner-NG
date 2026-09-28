@@ -19,7 +19,7 @@ import logging
 import math
 import os
 from datetime import datetime, time as dtime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -999,6 +999,13 @@ def register_v2_routes(app: FastAPI, app_state, **state_kw) -> V2State:
 _missing_logged = False
 
 
+def _safe_static_path(path: str) -> bool:
+    """Refuse absolute, traversal, and Windows UNC paths before resolving them."""
+    if not path or "\\" in path or ":" in path or "\x00" in path or path.startswith("/"):
+        return False
+    return ".." not in PurePosixPath(path).parts
+
+
 def mount_v2_static(app: FastAPI, dist: Path = _V2_DIST) -> None:
     """Serve dashboard-v2/dist at /v2 with an SPA fallback. Plain routes (not a
     mount) so they win over the old dashboard's "/" mount registered after."""
@@ -1011,6 +1018,8 @@ def mount_v2_static(app: FastAPI, dist: Path = _V2_DIST) -> None:
                 log.warning("api_v2: %s not built; run `npm --prefix dashboard-v2 run build`", dist)
                 _missing_logged = True
             return JSONResponse({"error": "dashboard-v2 not built"}, status_code=503)
+        if path and not _safe_static_path(path):
+            return FileResponse(index)
         target = (dist / path).resolve() if path else index
         try:
             inside = target.is_relative_to(dist.resolve())

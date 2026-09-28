@@ -523,6 +523,8 @@ def _resolve_vwap_hold(c: ConditionCtx, opt: str, p: dict) -> Optional[float]:
         return float(above)
     if opt == "below":
         return float(below)
+    if opt == "opposite":
+        return float(above if c.direction == "short" else below)
     return float(below if c.direction == "short" else above)
 
 
@@ -539,7 +541,8 @@ _add(ConditionDef(
     phrase="of the last {lookback} candles on {tf} min",
     # appended only when the margin is set, so saved setups read exactly as before
     phrase_if={"margin": ", by at least {margin}% of daily ATR"},
-    options=(OptionDef("trade", "In the trade direction"), OptionDef("above", "Above"),
+    options=(OptionDef("trade", "In the trade direction"),
+             OptionDef("opposite", "Opposite the trade direction"), OptionDef("above", "Above"),
              OptionDef("below", "Below")),
     option_label="Side", default_option="trade",
     params=(ParamDef("lookback", "Last N candles", 5, 2, 60, 1, "candles",

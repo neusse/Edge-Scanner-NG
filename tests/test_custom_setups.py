@@ -676,6 +676,14 @@ def test_a_lazily_created_ema_matches_a_preregistered_one():
 
 # ── range break (the general form of an opening-range break) ─────────────────
 
+def test_setup_validation_preserves_specific_error():
+    from scanner.custom_setups import SetupError, normalize_setup
+
+    invalid = _setup("bad", [{"id": "no_such_trigger", "options": []}])
+    with pytest.raises(SetupError, match="^unknown trigger"):
+        normalize_setup(invalid)
+
+
 def _rb(bars=5, tf=1, max_range_pct=1.5, vol_mult=1.5, opt="up"):
     return [{"id": "range_break", "options": [opt],
              "params": {"bars": bars, "tf": tf,

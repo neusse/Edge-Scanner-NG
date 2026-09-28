@@ -405,6 +405,23 @@ def test_quote_stream_cap_moves_the_overflow_to_polling(monkeypatch):
     assert feed.polled_symbols == symbols[2000:]          # overflow first, then the original tail
 
 
+def test_small_universe_starts_poller_for_later_overflow(monkeypatch):
+    started = []
+    real_thread = sw.threading.Thread
+
+    class RecordedThread(real_thread):
+        def start(self):
+            started.append(self.name)
+
+    monkeypatch.setattr(sw.threading, "Thread", RecordedThread)
+    feed, stream_cls = _fake_feed(monkeypatch, [])
+    feed.subscribe_minute_bars([f"S{i}" for i in range(250)], lambda bar: None)
+    stream_cls.receiver({"response": [{"service": "CHART_EQUITY", "content": {
+        "code": 19, "msg": "max (CHART_EQUITY=200, DISCARDED=50)"}}]})
+    assert len(feed.polled_symbols) == 50
+    assert {"schwab-quote-poll", "schwab-quote-bars"} <= set(started)
+
+
 def test_external_held_symbol_uses_existing_stream_and_budget(monkeypatch):
     sent = []
     feed, _ = _fake_feed(monkeypatch, sent)

@@ -157,7 +157,7 @@ def test_premarket_lists_come_from_live_state_with_no_requests():
         "QUIET": SimpleNamespace(prior_close=5.0, pm_last=None, pm_vol=0.0),
     }
     app_state = AppState(scanner=SimpleNamespace(_states=states, _profiles=None), feed=feed)
-    r = TestClient(create_app(app_state)).get("/api/premarket").json()
+    r = TestClient(create_app(app_state), base_url="http://localhost:7777").get("/api/premarket").json()
     assert calls == []                                            # nothing was downloaded
     assert [x["symbol"] for x in r["gainers"]] == ["UP"] and r["gainers"][0]["change_pct"] == 10.0
     assert [x["symbol"] for x in r["losers"]] == ["DOWN"]

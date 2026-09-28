@@ -365,13 +365,21 @@ the source of truth if you have edited a setup since that reference was written.
 - **Triggers** from the trigger catalog (`scanner/trigger_catalog.py`): the moment worth
   an alert, such as a cross above VWAP, a 5-minute breakout, a new high of day, a candle pattern, or
   relative volume crossing a level. Combine several with OR, AND or AT LEAST logic.
-- **Parameters**: conditions that must hold when the trigger fires (for example gap of at least 2%,
+- **Checks**: conditions that must hold when the trigger fires (for example gap of at least 2%,
   relative volume above 1.5, price above VWAP).
 - **A universe filter**: which symbols the setup watches.
 
 The [native trigger contract matrix](docs/TRIGGER_CONTRACTS.md) lists every alert's session,
 event lifetime, boundary, and re-arm rule. Setup Check exposes each configured trigger's
 active lifetime alongside its latest level and note.
+
+**VWAP cross confirmed** waits for a completed candle to close across VWAP, then for the
+immediately next candle to close on the same side. It uses each candle's own VWAP and does
+not alert on an intrabar wick. The **Held above / below VWAP** check can now require closes
+opposite the alert direction as well as in the alert direction. Neither option changes
+existing saved setups unless you select it. **Range break** now re-arms after a quiet
+return inside a qualifying range, so a later real exit can alert again; its saved
+`vol_mult` threshold and per-minute comparison are unchanged.
 
 The General tab separates **Signals to detect** from **Report alert as**. Most setups should leave
 the report direction on `Detected signal direction`. A position-management setup can override it:

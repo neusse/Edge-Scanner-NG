@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi import Request as _Request
 
 from scanner.feed_hub import FeedHub, Subscription
+from scanner import local_guard
 
 if TYPE_CHECKING:
     from scanner.data.alpaca import AlpacaFeed
@@ -156,6 +157,7 @@ def create_app(app_state: AppState) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(local_guard.LocalOnlyMiddleware)
 
     @app.middleware("http")
     async def replay_is_read_only(request: _Request, call_next):

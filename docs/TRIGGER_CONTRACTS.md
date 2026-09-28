@@ -42,6 +42,7 @@ sink can further suppress publication; those do not change the trigger's event c
 | `consec_candles` | streak_edge | Pre, RTH | Fires when completed same-color streak first reaches N; opposite candle re-arms. |
 | `cross_above` | recross | Pre, RTH | Prior close at/below and current close strictly above selected level; higher timeframe uses completed candles. |
 | `cross_below` | recross | Pre, RTH | Prior close at/above and current close strictly below selected level; higher timeframe uses completed candles. |
+| `vwap_cross_confirmed` | completed_candle_recross | RTH | A completed close crosses VWAP and the next consecutive candle confirms on the same side; each uses its own VWAP. |
 | `vwap_v` | completed_candle | Pre, RTH | Completed touch candle snaps back from distance with bounded prior dwell in the same date/session. |
 | `range_break` | range_exit_edge | Pre, RTH | Close exits tight N-candle range on qualifying per-minute volume; re-arms on return inside. |
 | `ema_cross_ema` | recross | Pre, RTH | Fast/slow EMA strict cross after both are warmed on completed candles. |

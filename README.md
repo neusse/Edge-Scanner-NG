@@ -37,8 +37,9 @@ they are not anyone's real account, positions or orders.
 
 ## Privacy and your data
 
-Edge Scanner NG is local-first. The scanner and the dashboard listen on `localhost` only, and there is
-no login because nothing is exposed to the network.
+Edge Scanner NG is local-first. By default the scanner and dashboard listen on `localhost` only.
+The API also rejects unapproved Host names and foreign-page writes; there is no login. Serving it
+on a LAN with `--host` requires a trusted network and, when needed, `SCANNER_ALLOWED_HOSTS`.
 
 - **Stays on your machine:** your API keys in `.env`, the setups, universe filters, watchlists and
   screens you build, the bar caches, and the alert archives. All of it under `data/`, which is
@@ -53,7 +54,7 @@ no login because nothing is exposed to the network.
 
 ## What's inside
 
-- **Custom setups, no code.** A catalog of about 45 triggers (candle patterns, level breaks,
+- **Custom setups, no code.** A catalog of 50-plus native triggers (candle patterns, level breaks,
   crosses, VWAP and EMA behaviour, opening range, momentum, relative strength against SPY), each
   with its own options and parameters. Combine them with AND, OR or "at least N of", add conditions
   the stock must meet, and pick the universe the setup runs on.

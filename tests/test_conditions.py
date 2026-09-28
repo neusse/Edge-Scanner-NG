@@ -517,6 +517,14 @@ def test_a_short_counts_candles_below_vwap():
     assert C.check(_hold(5), long_).passed is False
 
 
+def test_vwap_hold_can_count_opposite_to_trade_direction():
+    s = _series_5m([-1] * 5)
+    long_ = C.ConditionCtx(state=SimpleNamespace(symbol="X"), series=s, direction="long")
+    short = C.ConditionCtx(state=SimpleNamespace(symbol="X"), series=s, direction="short")
+    assert C.check(_hold(5, option="opposite"), long_).passed is True
+    assert C.check(_hold(5, option="opposite"), short).passed is False
+
+
 def test_it_cannot_pass_before_the_session_has_n_candles():
     """Fails closed until there has been time for VWAP to hold: 09:55 on 5 x 5-min."""
     ctx = C.ConditionCtx(state=SimpleNamespace(symbol="X"), series=_series_5m([1] * 3),

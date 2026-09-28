@@ -39,7 +39,7 @@ def test_chart_uses_seeded_and_live_bars_without_refetching_history():
     scanner = LiveScanner(["AAPL"], feed)
     _warmup(scanner)
     scanner.seed_session_bar(_live_bar(1, source="schwab_history_1m"))
-    client = TestClient(create_app(AppState(scanner=scanner, feed=feed)))
+    client = TestClient(create_app(AppState(scanner=scanner, feed=feed)), base_url="http://localhost:7777")
 
     first = client.get("/api/bars/AAPL/1min")
     assert first.status_code == 200
@@ -57,7 +57,7 @@ def test_five_minute_chart_aggregates_new_streamed_minutes_without_refetch():
     feed = ChartFeed()
     scanner = LiveScanner(["AAPL"], feed)
     _warmup(scanner)
-    client = TestClient(create_app(AppState(scanner=scanner, feed=feed)))
+    client = TestClient(create_app(AppState(scanner=scanner, feed=feed)), base_url="http://localhost:7777")
     assert client.get("/api/bars/AAPL/5min").status_code == 200
     scanner._on_bar(_live_bar(1))
     bar = _live_bar(2)

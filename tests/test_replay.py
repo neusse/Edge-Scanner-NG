@@ -102,7 +102,7 @@ def test_replay_api_freezes_config_and_charts_show_processed_bars_only(tmp_path,
     app_state.replay = {"date": "2026-09-22", "cursor": None, "speed": 1}
     app_state.replay_input = snapshot
     app_state.replay_controller = ReplayController([], lambda _: None, lambda: None)
-    client = TestClient(create_app(app_state))
+    client = TestClient(create_app(app_state), base_url="http://localhost:7777")
     assert client.post("/api/v2/settings", json={}).status_code == 403
     assert client.get("/api/bars/AAPL/1min").json()["bars"] == []
     assert client.get("/api/replay/status").json()["date"] == "2026-09-22"

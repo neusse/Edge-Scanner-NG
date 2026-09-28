@@ -85,7 +85,7 @@ def client(tmp_path: Path):
 def test_create_app_exposes_v2_routes():
     """The 3-line wiring in scanner/api.py: v2 routes exist on the real app and win over the SPA fallback."""
     app_state = AppState(scanner=FakeScanner(_states()), feed=None)  # type: ignore[arg-type]
-    c = TestClient(create_app(app_state))
+    c = TestClient(create_app(app_state), base_url="http://localhost:7777")
     assert c.get("/api/v2/clock").status_code == 200
     assert c.get("/api/v2/toplists/rvol").status_code == 200
 

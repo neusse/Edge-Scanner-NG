@@ -770,7 +770,7 @@ class SchwabFeed(DataFeed):
                 except Exception as exc:
                     log.error("quote bar flush failed: %s", exc, exc_info=True)
 
-        if synthetic and rest:
+        if synthetic:
             threading.Thread(target=_flush, daemon=True, name="schwab-quote-bars").start()
             threading.Thread(target=_poll, daemon=True, name="schwab-quote-poll").start()
 

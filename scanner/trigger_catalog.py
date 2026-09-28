@@ -304,6 +304,14 @@ def _build_catalog() -> list[TriggerDef]:
                    "or above it. Candle size picks the chart: on 5 min it takes a 5-minute close "
                    "through the level, so a 1-minute poke that fails inside the candle does not count.",
                    "short", LEVELS, "Level", params=(_CROSS_TF,), default_options=("vwap",)))
+    add(TriggerDef("vwap_cross_confirmed", "VWAP cross confirmed", "Crosses & levels",
+                   "A completed candle closes across VWAP and the immediately next candle "
+                   "closes on that same side. Both closes use their own VWAP; wicks and "
+                   "candle color do not decide confirmation.",
+                   "both", (OptionDef("above", "Cross above", "long"),
+                            OptionDef("below", "Cross below", "short")), "Direction",
+                   params=(_CROSS_TF,), sessions=("rth",),
+                   default_options=("above", "below")))
     add(TriggerDef("vwap_v", "V off VWAP", "Crosses & levels",
                    "A sharp V into VWAP and straight back out. Price was well away from VWAP, "
                    "came to it without lingering, touched it, and the touch candle closed back "
@@ -453,7 +461,8 @@ EVENT_LIFETIMES: dict[str, str] = {
     "double_inside_bar": "completed_candle", "upper_shadow": "completed_candle",
     "lower_shadow": "completed_candle", "volume_spike": "completed_candle",
     "consec_candles": "streak_edge", "cross_above": "recross",
-    "cross_below": "recross", "vwap_v": "completed_candle",
+    "cross_below": "recross", "vwap_cross_confirmed": "completed_candle_recross",
+    "vwap_v": "completed_candle",
     "range_break": "range_exit_edge", "ema_cross_ema": "recross",
     "through_vwap": "recross", "vwap_support": "completed_candle",
     "vwap_resistance": "completed_candle", "back_to_ema": "once_per_candle",
@@ -1478,6 +1487,30 @@ def _candle_cross(c: EvalCtx, opt: str, tf: int, up: bool) -> Optional[Fire]:
     return None
 
 
+@_impl("vwap_cross_confirmed")
+def _t_vwap_cross_confirmed(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
+    tf = int(p.get("tf", 1) or 1)
+    if tf not in TIMEFRAMES or not c.series.completed[tf] or c.session != "rth":
+        return None
+    candles = _session_completed(c, tf, 3)
+    if len(candles) != 3 or opt not in ("above", "below"):
+        return None
+    confirm = candles[-1]
+    keys = [candle["key"] for candle in candles]
+    if keys[1][2] != keys[0][2] + 1 or keys[2][2] != keys[1][2] + 1:
+        return None  # a missing candle cannot confirm the cross
+    if any(candle.get("vwap") is None for candle in candles):
+        return None
+    prior, crossed, confirmed = (candle["close"] - candle["vwap"] for candle in candles)
+    up = opt == "above"
+    if not ((prior <= 0 and crossed > 0 and confirmed > 0) if up
+            else (prior >= 0 and crossed < 0 and confirmed < 0)):
+        return None
+    side = "above" if up else "below"
+    return Fire("long" if up else "short", confirm["vwap"],
+                f"{TF_LABEL[tf]} VWAP cross {side} confirmed by the next candle close")
+
+
 def _level_label(key: str) -> str:
     for o in LEVELS:
         if o.key == key:
@@ -1674,6 +1707,14 @@ def _t_range_break(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     limit = range_width_limit(c, cs, tf, n, unit, float(p["max_range_pct"]))
     if limit is None or hi - lo > limit:
         return None
+    px = float(c.bar["close"])
+    key = f"rb:{tf}:{n}:{unit}:{float(p['max_range_pct'])}:{float(p['vol_mult'])}"
+    key += ":up" if opt == "up" else ":dn"
+    outside = px > hi if opt == "up" else px < lo
+    if not outside:
+        # Returning inside re-arms even when this minute has little volume.
+        c.edge(key, False)
+        return None
     # Evaluation happens on every 1-minute bar, including minute 1 of an
     # incomplete higher-timeframe candle. Convert the completed range candles'
     # volume to a per-minute baseline before comparing like time units.
@@ -1681,7 +1722,6 @@ def _t_range_break(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     avg = sum(vols) / (len(vols) * tf) if vols else 0.0
     if avg <= 0 or float(c.bar.get("volume") or 0.0) < avg * float(p["vol_mult"]):
         return None
-    px = float(c.bar["close"])
     # edge(), not once(): the window slides forward with price, so a trend would
     # keep presenting a fresh "range" and re-fire on every bar. Latching on
     # "outside the range" gives one alert per exit, and re-arms only when price
@@ -1689,12 +1729,11 @@ def _t_range_break(c: EvalCtx, opt: str, p: dict) -> Optional[Fire]:
     # two setups on the same candles with different widths or volume reach this
     # line on different bars, and a shared latch let the first one silence the
     # other.
-    key = f"rb:{tf}:{n}:{unit}:{float(p['max_range_pct'])}:{float(p['vol_mult'])}"
     if opt == "up":
-        if c.edge(key + ":up", px > hi):
+        if c.edge(key, True):
             return Fire("long", hi, f"broke {n}x{tf}min range high {hi:.2f} on volume")
         return None
-    if c.edge(key + ":dn", px < lo):
+    if c.edge(key, True):
         return Fire("short", lo, f"broke {n}x{tf}min range low {lo:.2f} on volume")
     return None
 

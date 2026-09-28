@@ -100,8 +100,8 @@ def test_ws_replay_is_filtered_and_pushes_matching_alerts(app):
     cs.push(_alert(trigger="power_bar", symbol="MSFT"))
     sys_.push(_alert(setup="X1", trigger="SYS_X1"))
     sys_.push(_alert(setup="X3", trigger="SYS_X3", symbol="TSLA", direction="short"))
-    with TestClient(fastapi_app) as c:
-        with c.websocket_connect("/ws/alerts?sources=system&setups=X1,X2") as ws:
+    with TestClient(fastapi_app, base_url="http://localhost:7777") as c:
+        with c.websocket_connect("/ws/alerts?sources=system&setups=X1,X2", headers={"Host": "localhost:7777"}) as ws:
             replay = ws.receive_json()
             assert replay["type"] == "replay" and [a["setup"] for a in replay["alerts"]] == ["X1"]
             assert replay["filter"]["setups"] == ["X1", "X2"]
@@ -110,7 +110,7 @@ def test_ws_replay_is_filtered_and_pushes_matching_alerts(app):
             cs.push(_alert(trigger="orb", symbol="NFLX", timestamp="2026-09-08T14:42:00-04:00"))
             msg = ws.receive_json()
             assert msg["type"] == "alert" and msg["alert"]["setup"] == "X2" and msg["alert"]["source"] == "system"
-        with c.websocket_connect("/ws/alerts") as ws:
+        with c.websocket_connect("/ws/alerts", headers={"Host": "localhost:7777"}) as ws:
             replay = ws.receive_json()
             assert [a["source"] for a in replay["alerts"]] == ["custom", "system", "system", "system", "system", "custom"]
         r = c.get("/api/alerts?sources=custom").json()

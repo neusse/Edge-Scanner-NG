@@ -48,8 +48,8 @@ def test_live_frames_validate_and_ids_survive_restart_for_recovery(tmp_path):
     page = restarted.recover_for(Subscription(), a["event_id"])
     assert [x["event_id"] for x in page["alerts"]] == [b["event_id"]]
     assert page["next_cursor"] == b["event_id"] and not page["has_more"]
-    with TestClient(_app(restarted)) as client:
-        with client.websocket_connect("/ws/alerts") as ws:
+    with TestClient(_app(restarted), base_url="http://localhost:7777") as client:
+        with client.websocket_connect("/ws/alerts", headers={"Host": "localhost:7777"}) as ws:
             replay = ws.receive_json()
             VALIDATOR.validate(replay)
             assert [x["event_id"] for x in replay["alerts"]] == [b["event_id"], a["event_id"]]
@@ -66,12 +66,12 @@ def test_recovery_is_oldest_first_paged_and_expired_cursor_is_explicit(tmp_path)
     assert [a["symbol"] for a in page["alerts"]] == ["AAPL", "MSFT"]
     assert page["has_more"] and page["next_cursor"] == alerts[1]["event_id"]
     assert [a["symbol"] for a in hub.recover_for(Subscription(), page["next_cursor"])["alerts"]] == ["NVDA"]
-    with TestClient(_app(hub)) as client:
+    with TestClient(_app(hub), base_url="http://localhost:7777") as client:
         response = client.get("/api/alerts/recover?after=missing")
         assert response.status_code == 410 and response.json()["error"] == "cursor_not_found"
         assert client.get("/api/alerts?direction=sideways").status_code == 400
         with pytest.raises(WebSocketDisconnect) as exc:
-            with client.websocket_connect("/ws/alerts?direction=sideways"):
+            with client.websocket_connect("/ws/alerts?direction=sideways", headers={"Host": "localhost:7777"}):
                 pass
         assert exc.value.code == 1008
 

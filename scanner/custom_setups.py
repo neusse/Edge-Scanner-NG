@@ -75,6 +75,8 @@ def normalize_setup(raw: dict, *, existing_id: Optional[str] = None) -> dict:
     """Validate + normalise a custom setup definition. Raises SetupError."""
     try:
         return _normalize_setup(raw, existing_id=existing_id)
+    except SetupError:
+        raise
     except (ValueError, TypeError, OverflowError) as exc:
         # "abc", NaN, infinity or a list where a number belongs. The API maps
         # SetupError to a 400; anything else would surface as a 500.
