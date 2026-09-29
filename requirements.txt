@@ -11,7 +11,7 @@ lxml>=4.9.0
 fastapi>=0.141.1
 uvicorn[standard]>=0.29.0
 websockets>=17.1
-yfinance>=0.2.40
+yfinance>=1.7.0
 schwabdev>=4.0                  # only for DATA_PROVIDER=schwab (MIT, github.com/tylerebowers/Schwabdev)
 
 # Tests (the FastAPI/Starlette test client needs httpx, or httpx2 on Starlette 1.x)
