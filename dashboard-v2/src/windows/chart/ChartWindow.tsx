@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  CandlestickSeries, createChart, createSeriesMarkers, ColorType, CrosshairMode,
+  CandlestickSeries, createChart, createSeriesMarkers, createTextWatermark, ColorType, CrosshairMode,
   HistogramSeries, LineSeries, LineStyle,
   type IChartApi, type ISeriesApi, type IPriceLine, type ISeriesMarkersPluginApi,
   type SeriesMarker, type Time, type UTCTimestamp,
@@ -54,6 +54,7 @@ interface Refs {
   markers: ISeriesMarkersPluginApi<Time>
   lines: Partial<Record<'vwap' | 'ema9' | 'ema21' | 'sma50' | 'sma100' | 'sma200', Line>>
   priceLines: IPriceLine[]
+  setWatermarkText: (text: string) => void
 }
 
 const ts = (t: string) => toSecET(t) as UTCTimestamp
@@ -121,12 +122,33 @@ export function ChartWindow({ win }: { win: ChartConfig }) {
     })
     const volume = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol', lastValueVisible: false, priceLineVisible: false })
     const markers = createSeriesMarkers(candles, [])
+    const watermark = createTextWatermark(chart.panes()[0], {
+      horzAlign: 'center', vertAlign: 'center', lines: [],
+    })
+    const measure = document.createElement('canvas').getContext('2d')
+    const fontFamily = 'Arial, sans-serif'
+    let watermarkText = ''
+    const setWatermarkText = (text: string) => {
+      watermarkText = text
+      if (measure) measure.font = `bold 48px ${fontFamily}`
+      const textWidth = measure?.measureText(text).width ?? text.length * 28
+      const width = Math.max(1, host.clientWidth - 100)
+      const height = Math.max(1, host.clientHeight * 0.18)
+      const fontSize = Math.max(1, Math.min(56, height, 48 * width / Math.max(1, textWidth)))
+      watermark.applyOptions({
+        visible: !!text,
+        lines: [{ text, color: 'rgba(128, 128, 128, 0.16)', fontSize, fontFamily, fontStyle: 'bold' }],
+      })
+    }
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } })
-    refs.current = { chart, candles, volume, markers, lines: {}, priceLines: [] }
+    refs.current = { chart, candles, volume, markers, lines: {}, priceLines: [], setWatermarkText }
 
     const ro = new ResizeObserver(entries => {
       const r = entries[0]?.contentRect
-      if (r && r.width > 0 && r.height > 0) chart.applyOptions({ width: Math.floor(r.width), height: Math.floor(r.height) })
+      if (r && r.width > 0 && r.height > 0) {
+        chart.applyOptions({ width: Math.floor(r.width), height: Math.floor(r.height) })
+        setWatermarkText(watermarkText)
+      }
     })
     ro.observe(host)
 
@@ -139,8 +161,14 @@ export function ChartWindow({ win }: { win: ChartConfig }) {
       L?.sma50?.applyOptions({ color: p.sma50 }); L?.sma100?.applyOptions({ color: p.sma100 }); L?.sma200?.applyOptions({ color: p.sma200 })
     }
     window.addEventListener(THEME_EVENT, onTheme)
-    return () => { window.removeEventListener(THEME_EVENT, onTheme); ro.disconnect(); chart.remove(); refs.current = null }
+    return () => { window.removeEventListener(THEME_EVENT, onTheme); ro.disconnect(); watermark.detach(); chart.remove(); refs.current = null }
   }, [])
+
+  // Never carry the previous company's name into a newly linked symbol.
+  const companyName = fund?.symbol === symbol ? fund.name?.trim() : null
+  useEffect(() => {
+    refs.current?.setWatermarkText(companyName || symbol || '')
+  }, [companyName, symbol])
 
   // data + overlays
   const visibleBars = useMemo(() => {
