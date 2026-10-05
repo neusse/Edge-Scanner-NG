@@ -261,7 +261,7 @@ while dragging to turn off snapping.
 | Window | What it shows |
 |---|---|
 | **Scanner** | The live alert stream. Each window has its own filters: setups, direction, minimum score and symbols. Column picker, row tint, and a sound or text-to-speech per window |
-| **Chart** | Intraday and daily candles with extended hours, VWAP, EMAs, daily SMAs, prior-day and premarket levels |
+| **Chart** | Intraday and daily candles with extended hours, VWAP, EMAs, daily SMAs, prior-day and premarket levels. A faint company-name watermark appears behind the candles and resizes with the window; the ticker appears while the name is unavailable |
 | **Bid / Ask** | Linked-symbol bid and ask history with a spread panel. Gaps mark stale or invalid quotes; see the [live quote contract](docs/QUOTE_FEED.md) for timing and quality rules |
 | **Rankings** | Ranked lists: RVOL leaders, gainers and losers (from the close or the open), 5-minute movers, premarket gainers, losers and volume, and a new high / low of day stream |
 | **Screener** | Yahoo Finance presets or custom price, change, volume and market-cap filters. Results are discovery candidates that can be saved to watchlists |
